@@ -231,7 +231,7 @@ jobs:
           TARGET="aarch64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
-          APP_PATH="$BUNDLE/macos/ClaudePrism.app"
+          APP_PATH="$BUNDLE/macos/TectonicEditor.app"
 
           if [ -z "$DMG_PATH" ]; then
             echo "Error: DMG not found"
@@ -388,7 +388,7 @@ jobs:
           TARGET="x86_64-apple-darwin"
           BUNDLE="apps/desktop/src-tauri/target/$TARGET/release/bundle"
           DMG_PATH=$(find "$BUNDLE/dmg" -name '*.dmg' | head -1)
-          APP_PATH="$BUNDLE/macos/ClaudePrism.app"
+          APP_PATH="$BUNDLE/macos/TectonicEditor.app"
 
           if [ -z "$DMG_PATH" ]; then
             echo "Error: DMG not found"
@@ -546,23 +546,23 @@ jobs:
         run: |
           VERSION="${TAG#v}"
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          export BASE_URL="https://github.com/delibae/claude-prism/releases/download/$TAG"
+          export BASE_URL="https://github.com/anomalyco/tectonic-editor/releases/download/$TAG"
 
           node -e "
             const BASE = process.env.BASE_URL;
             const platforms = {};
             if (process.env.MAC_SIG)
-              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/ClaudePrism-macOS.app.tar.gz' };
+              platforms['darwin-aarch64'] = { signature: process.env.MAC_SIG, url: BASE + '/TectonicEditor-macOS.app.tar.gz' };
             if (process.env.MAC_INTEL_SIG)
-              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/ClaudePrism-macOS-Intel.app.tar.gz' };
+              platforms['darwin-x86_64'] = { signature: process.env.MAC_INTEL_SIG, url: BASE + '/TectonicEditor-macOS-Intel.app.tar.gz' };
             if (process.env.LIN_SIG)
-              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/ClaudePrism-Linux.AppImage' };
+              platforms['linux-x86_64'] = { signature: process.env.LIN_SIG, url: BASE + '/TectonicEditor-Linux.AppImage' };
             if (process.env.WIN_SIG)
-              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/ClaudePrism-Windows-setup.exe' };
+              platforms['windows-x86_64'] = { signature: process.env.WIN_SIG, url: BASE + '/TectonicEditor-Windows-setup.exe' };
 
             const data = {
               version: '$VERSION',
-              notes: 'ClaudePrism $TAG',
+              notes: 'TectonicEditor $TAG',
               pub_date: '$PUB_DATE',
               platforms
             };
@@ -576,7 +576,7 @@ jobs:
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
           gh release view "$TAG" > /dev/null 2>&1 || \
-            gh release create "$TAG" --title "ClaudePrism $TAG" --generate-notes --draft
+            gh release create "$TAG" --title "TectonicEditor $TAG" --generate-notes --draft
 
       - name: Rename and upload assets
         env:
@@ -587,18 +587,18 @@ jobs:
 
           # Rename platform artifacts to version-free names
           # macOS Apple Silicon (from desktop-macos artifact)
-          find artifacts/desktop-macos -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.dmg
-          find artifacts/desktop-macos -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS.app.tar.gz
+          find artifacts/desktop-macos -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-macOS.dmg
+          find artifacts/desktop-macos -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-macOS.app.tar.gz
           # macOS Intel (from desktop-macos-intel artifact)
-          find artifacts/desktop-macos-intel -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS-Intel.dmg
-          find artifacts/desktop-macos-intel -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-macOS-Intel.app.tar.gz
+          find artifacts/desktop-macos-intel -name "*.dmg" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-macOS-Intel.dmg
+          find artifacts/desktop-macos-intel -name "*.app.tar.gz" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-macOS-Intel.app.tar.gz
           # Windows
-          find artifacts/desktop-windows -name "*-setup.exe" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows-setup.exe
-          find artifacts/desktop-windows -name "*.msi" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Windows.msi
+          find artifacts/desktop-windows -name "*-setup.exe" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-Windows-setup.exe
+          find artifacts/desktop-windows -name "*.msi" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-Windows.msi
           # Linux
-          find artifacts/desktop-linux -name "*.deb" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.deb
-          find artifacts/desktop-linux -name "*.rpm" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.rpm
-          find artifacts/desktop-linux -name "*.AppImage" 2>/dev/null | head -1 | xargs -I{} cp {} upload/ClaudePrism-Linux.AppImage
+          find artifacts/desktop-linux -name "*.deb" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-Linux.deb
+          find artifacts/desktop-linux -name "*.rpm" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-Linux.rpm
+          find artifacts/desktop-linux -name "*.AppImage" 2>/dev/null | head -1 | xargs -I{} cp {} upload/TectonicEditor-Linux.AppImage
 
           cp latest.json upload/
 

@@ -126,7 +126,6 @@ export function ProjectPicker() {
             onClick={handleOpenFolder}
             size="lg"
             className="flex-1 gap-2"
-            disabled={!isClaudeReady}
           >
             <FolderOpenIcon className="size-5" />
             Open Folder

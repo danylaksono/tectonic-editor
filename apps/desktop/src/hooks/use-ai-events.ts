@@ -45,8 +45,7 @@ interface AiErrorPayload {
 
 /**
  * Hook that listens to provider-agnostic `ai-output`, `ai-complete`,
- * and `ai-error` Tauri events.  Replaces `useClaudeEvents` for the
- * unified AI provider architecture.
+ * and `ai-error` Tauri events.
  *
  * For Claude CLI provider, the data lines are stream-json (same format
  * as before). For API providers (Anthropic/OpenAI), the data lines are

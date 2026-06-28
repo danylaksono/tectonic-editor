@@ -421,9 +421,10 @@ export function ClaudeSetup() {
         <div className="flex items-center gap-2">
           <TerminalIcon className="size-5 shrink-0 text-muted-foreground" />
           <div>
-            <p className="font-medium text-sm">Claude Code Required</p>
+            <p className="font-medium text-sm">Claude Code CLI unavailable</p>
             <p className="text-muted-foreground text-xs">
-              TectonicEditor needs Claude Code CLI to power AI features.
+              Install it to use the Claude Code provider, or choose another AI
+              provider in settings.
             </p>
           </div>
         </div>

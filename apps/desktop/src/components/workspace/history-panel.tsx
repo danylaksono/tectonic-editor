@@ -45,15 +45,15 @@ function snapshotTypeLabel(message: string): string {
   if (message.startsWith("[auto]")) return "Auto-save";
   if (message.startsWith("[manual]")) return "Save";
   if (message.startsWith("[compile]")) return "Compile";
-  if (message.startsWith("[claude]"))
-    return message.includes("Before") ? "Before Claude" : "After Claude";
+  if (message.startsWith("[ai]") || message.startsWith("[claude]"))
+    return message.includes("Before") ? "Before AI" : "After AI";
   if (message.startsWith("[restore]")) return "Restore";
   if (message.startsWith("[init]")) return "Initial";
   return message;
 }
 
 function snapshotTypeBadgeColor(message: string): string {
-  if (message.startsWith("[claude]"))
+  if (message.startsWith("[ai]") || message.startsWith("[claude]"))
     return "bg-violet-500/15 text-violet-600 dark:text-violet-400";
   if (message.startsWith("[restore]"))
     return "bg-amber-500/15 text-amber-600 dark:text-amber-400";

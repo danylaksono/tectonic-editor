@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const HISTORY_DIR: &str = ".tectonic-editor";
+const LEGACY_HISTORY_DIR: &str = ".claudeprism";
+
 // ─── Types ───
 
 #[derive(Serialize, Clone)]
@@ -25,10 +28,48 @@ pub struct FileDiff {
 
 // ─── Helpers ───
 
+fn history_dir(project_root: &str) -> PathBuf {
+    Path::new(project_root).join(HISTORY_DIR)
+}
+
+fn legacy_history_dir(project_root: &str) -> PathBuf {
+    Path::new(project_root).join(LEGACY_HISTORY_DIR)
+}
+
+fn resolved_history_dir(project_root: &str) -> PathBuf {
+    let current = history_dir(project_root);
+    if current.exists() {
+        return current;
+    }
+
+    let legacy = legacy_history_dir(project_root);
+    if legacy.exists() {
+        return legacy;
+    }
+
+    current
+}
+
 fn history_path(project_root: &str) -> PathBuf {
-    Path::new(project_root)
-        .join(".claudeprism")
-        .join("history.git")
+    resolved_history_dir(project_root).join("history.git")
+}
+
+fn migrate_legacy_history(project_root: &str) -> Result<(), String> {
+    let current = history_dir(project_root);
+    let legacy = legacy_history_dir(project_root);
+
+    if current.exists() || !legacy.exists() {
+        return Ok(());
+    }
+
+    fs::rename(&legacy, &current).map_err(|e| {
+        format!(
+            "Failed to migrate history from {} to {}: {}",
+            legacy.display(),
+            current.display(),
+            e
+        )
+    })
 }
 
 fn open_repo(project_root: &str) -> Result<Repository, String> {
@@ -59,9 +100,7 @@ fn tag_map(repo: &Repository) -> HashMap<Oid, Vec<String>> {
 }
 
 fn ensure_excludes(project_root: &str, repo: &Repository) {
-    let excludes_path = Path::new(project_root)
-        .join(".claudeprism")
-        .join("history-exclude");
+    let excludes_path = resolved_history_dir(project_root).join("history-exclude");
     let content = r#"# LaTeX build artifacts
 *.aux
 *.log
@@ -91,15 +130,16 @@ Thumbs.db
 .git/
 
 # TectonicEditor internal
-.claudeprism/
+.tectonic-editor/
 .prism/
+.claudeprism/
 "#;
     if !excludes_path.exists() {
         let _ = fs::write(&excludes_path, content);
     } else {
-        // Migrate: add .prism/ if missing from existing excludes file
+        // Migrate: add current internal directories if missing from existing excludes file.
         if let Ok(existing) = fs::read_to_string(&excludes_path) {
-            if !existing.contains(".prism/") {
+            if !existing.contains(".prism/") || !existing.contains(".tectonic-editor/") {
                 let _ = fs::write(&excludes_path, content);
             }
         }
@@ -114,6 +154,7 @@ Thumbs.db
 
 #[tauri::command]
 pub fn history_init(project_root: String) -> Result<(), String> {
+    migrate_legacy_history(&project_root)?;
     let git_dir = history_path(&project_root);
 
     if git_dir.exists() {
@@ -124,10 +165,10 @@ pub fn history_init(project_root: String) -> Result<(), String> {
         return Ok(());
     }
 
-    // Create .claudeprism/ dir
-    let claudeprism_dir = Path::new(&project_root).join(".claudeprism");
-    fs::create_dir_all(&claudeprism_dir)
-        .map_err(|e| format!("Failed to create .claudeprism dir: {}", e))?;
+    // Create the TectonicEditor history directory.
+    let internal_dir = history_dir(&project_root);
+    fs::create_dir_all(&internal_dir)
+        .map_err(|e| format!("Failed to create {} dir: {}", HISTORY_DIR, e))?;
 
     // Init a bare repo with workdir pointing to project root
     let mut opts = RepositoryInitOptions::new();
@@ -553,7 +594,7 @@ mod tests {
         let dir = setup_project(&[("main.tex", "\\documentclass{article}")]);
         history_init(root(&dir)).unwrap();
 
-        let git_dir = dir.path().join(".claudeprism").join("history.git");
+        let git_dir = dir.path().join(HISTORY_DIR).join("history.git");
         assert!(git_dir.exists(), "history.git should be created");
 
         // Should have an initial commit
@@ -577,10 +618,11 @@ mod tests {
         let dir = setup_project(&[("main.tex", "doc")]);
         history_init(root(&dir)).unwrap();
 
-        let excludes = dir.path().join(".claudeprism").join("history-exclude");
+        let excludes = dir.path().join(HISTORY_DIR).join("history-exclude");
         assert!(excludes.exists());
         let content = fs::read_to_string(&excludes).unwrap();
         assert!(content.contains("*.aux"));
+        assert!(content.contains(".tectonic-editor/"));
         assert!(content.contains(".claudeprism/"));
         assert!(content.contains(".prism/"));
     }
@@ -835,13 +877,26 @@ mod tests {
     // ─── ensure_excludes ───
 
     #[test]
-    fn test_ensure_excludes_migrates_missing_prism() {
+    fn test_history_init_migrates_legacy_history_dir() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let legacy_dir = dir.path().join(LEGACY_HISTORY_DIR);
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("history-exclude"), "*.aux\n").unwrap();
+
+        history_init(root(&dir)).unwrap();
+
+        assert!(!legacy_dir.exists());
+        assert!(dir.path().join(HISTORY_DIR).join("history.git").exists());
+    }
+
+    #[test]
+    fn test_ensure_excludes_migrates_missing_internal_dirs() {
         let dir = setup_project(&[("main.tex", "x")]);
         let r = root(&dir);
         history_init(r.clone()).unwrap();
 
-        // Write an excludes file WITHOUT .prism/
-        let excludes_path = dir.path().join(".claudeprism").join("history-exclude");
+        // Write an excludes file WITHOUT the current internal dirs.
+        let excludes_path = dir.path().join(HISTORY_DIR).join("history-exclude");
         fs::write(&excludes_path, "*.aux\n*.log\n.claudeprism/\n").unwrap();
 
         let repo = open_repo(&r).unwrap();
@@ -851,6 +906,10 @@ mod tests {
         assert!(
             content.contains(".prism/"),
             "should migrate to include .prism/"
+        );
+        assert!(
+            content.contains(".tectonic-editor/"),
+            "should migrate to include .tectonic-editor/"
         );
     }
 

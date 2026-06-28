@@ -113,7 +113,10 @@ fn expand_env_vars(s: &str) -> String {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-    let wide: Vec<u16> = OsString::from(s).encode_wide().chain(std::iter::once(0)).collect();
+    let wide: Vec<u16> = OsString::from(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
 
     // First call to get required buffer size
     let size = unsafe {
@@ -323,9 +326,7 @@ fn find_claude_binary() -> Result<String, String> {
                 .join("pnpm")
                 .join("claude.cmd"),
             // Scoop
-            home.join("scoop")
-                .join("shims")
-                .join("claude.cmd"),
+            home.join("scoop").join("shims").join("claude.cmd"),
             // Standard Node.js install
             PathBuf::from(r"C:\Program Files\nodejs\claude.cmd"),
         ];
@@ -341,14 +342,20 @@ fn find_claude_binary() -> Result<String, String> {
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_claude_candidate_paths(home: &std::path::Path, pnpm_home: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+fn unix_claude_candidate_paths(
+    home: &std::path::Path,
+    pnpm_home: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(pnpm_home) = pnpm_home.filter(|value| !value.is_empty()) {
         paths.push(PathBuf::from(pnpm_home).join("claude"));
     }
     paths.extend([
         home.join("Library").join("pnpm").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("claude"),
         home.join(".pnpm").join("claude"),
         home.join(".claude").join("local").join("claude"),
         home.join(".npm-global").join("bin").join("claude"),
@@ -415,9 +422,9 @@ fn unix_shell_manager_candidate_paths(home: &std::path::Path) -> Vec<PathBuf> {
         paths.push(unix_claude_path_from_npm_prefix(npm_prefix));
     }
 
-    if let Some(yarn_bin) = run_login_shell_command(
-        "command -v yarn >/dev/null 2>&1 && yarn global bin 2>/dev/null",
-    ) {
+    if let Some(yarn_bin) =
+        run_login_shell_command("command -v yarn >/dev/null 2>&1 && yarn global bin 2>/dev/null")
+    {
         paths.push(unix_claude_path_from_bin_dir(yarn_bin));
     }
 
@@ -430,16 +437,31 @@ fn unix_shell_manager_candidate_paths(home: &std::path::Path) -> Vec<PathBuf> {
 fn unix_known_pnpm_claude_paths(home: &std::path::Path) -> Vec<PathBuf> {
     vec![
         home.join("Library").join("pnpm").join("claude"),
-        home.join("Library").join("pnpm").join("global").join("bin").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("claude"),
-        home.join(".local").join("share").join("pnpm").join("global").join("bin").join("claude"),
+        home.join("Library")
+            .join("pnpm")
+            .join("global")
+            .join("bin")
+            .join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("claude"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("global")
+            .join("bin")
+            .join("claude"),
         home.join(".pnpm").join("claude"),
         home.join(".pnpm").join("global").join("bin").join("claude"),
     ]
 }
 
 #[cfg(any(test, not(target_os = "windows")))]
-fn unix_extra_tool_dirs(home: &std::path::Path, pnpm_home: Option<std::ffi::OsString>) -> Vec<PathBuf> {
+fn unix_extra_tool_dirs(
+    home: &std::path::Path,
+    pnpm_home: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
     let mut dirs = vec![
         home.join(".local").join("bin"),
         home.join(".cargo").join("bin"),
@@ -447,7 +469,11 @@ fn unix_extra_tool_dirs(home: &std::path::Path, pnpm_home: Option<std::ffi::OsSt
         home.join("Library").join("pnpm"),
         home.join("Library").join("pnpm").join("global").join("bin"),
         home.join(".local").join("share").join("pnpm"),
-        home.join(".local").join("share").join("pnpm").join("global").join("bin"),
+        home.join(".local")
+            .join("share")
+            .join("pnpm")
+            .join("global")
+            .join("bin"),
         home.join(".pnpm"),
         home.join(".pnpm").join("global").join("bin"),
         "/opt/homebrew/bin".into(),
@@ -634,7 +660,6 @@ fn resolve_cmd_to_node(program: &str) -> (String, Vec<String>) {
 fn new_sync_command(program: &str) -> std::process::Command {
     #[cfg(target_os = "windows")]
     {
-
         let (resolved, prefix) = resolve_cmd_to_node(program);
         let mut c = std::process::Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -669,7 +694,6 @@ fn create_command(
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let (resolved, prefix) = resolve_cmd_to_node(clean_program.as_ref());
         let mut c = Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -767,8 +791,7 @@ fn create_command(
                     if let Some(nvm_bin_path) = candidates.first() {
                         let nvm_bin_str = nvm_bin_path.to_string_lossy();
                         if !current_path.contains(nvm_bin_str.as_ref()) {
-                            current_path =
-                                format!("{}{}{}", nvm_bin_str, sep, current_path);
+                            current_path = format!("{}{}{}", nvm_bin_str, sep, current_path);
                         }
                     }
                 }
@@ -1443,7 +1466,6 @@ pub async fn install_claude_cli(window: WebviewWindow) -> Result<(), String> {
     };
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let mut c = tokio::process::Command::new("powershell");
         c.creation_flags(CREATE_NO_WINDOW);
         c.args([
@@ -1547,7 +1569,6 @@ pub async fn login_claude(window: WebviewWindow) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     let mut cmd = {
-
         let (resolved, prefix) = resolve_cmd_to_node(&binary_path);
         let mut c = tokio::process::Command::new(&resolved);
         c.creation_flags(CREATE_NO_WINDOW);
@@ -1652,7 +1673,7 @@ fn common_claude_args() -> Vec<String> {
         "--dangerously-skip-permissions".to_string(),
         "--append-system-prompt".to_string(),
         concat!(
-            "You are an AI assistant integrated into a LaTeX document editor (Prism). ",
+            "You are an AI assistant integrated into TectonicEditor, an offline-first LaTeX editor. ",
             "Follow these rules strictly:\n",
             "1. PLANNING FIRST: Before making changes, use TodoWrite to create a step-by-step plan. ",
             "Break large tasks into small, incremental steps (one section or one logical unit per step).\n",
@@ -1664,7 +1685,7 @@ fn common_claude_args() -> Vec<String> {
             "and structure intact. Only add or modify what is needed for the current step.\n",
             "5. LaTeX BEST PRACTICES: Use proper sectioning (\\chapter, \\section, \\subsection), ",
             "citations (\\cite), cross-references (\\label, \\ref), and BibTeX for bibliographies.\n",
-            "6. SKILLS: If scientific skills are installed in .claude/skills/, follow their guidelines ",
+            "6. SKILLS: If scientific skills are installed in .tectonic-editor/skills/ or .claude/skills/, follow their guidelines ",
             "for domain-specific tasks. Use skill-provided LaTeX packages (.sty) and code patterns.\n",
             "7. PYTHON: If a .venv/ exists in the project, it is already activated. ",
             "Use `uv pip install` to add packages and `python` to run scripts."
@@ -2219,8 +2240,10 @@ mod tests {
 
     #[test]
     fn test_with_prompt_transport_always_includes_print_flag() {
-        let (args, stdin_payload) =
-            with_prompt_transport(vec!["--resume".to_string(), "abc".to_string()], "hello 文件".into());
+        let (args, stdin_payload) = with_prompt_transport(
+            vec!["--resume".to_string(), "abc".to_string()],
+            "hello 文件".into(),
+        );
         assert!(args.contains(&"-p".to_string()));
         #[cfg(target_os = "windows")]
         {
@@ -2405,13 +2428,17 @@ mod tests {
     #[test]
     fn test_unix_claude_candidate_paths_include_pnpm_locations() {
         let home = PathBuf::from("/Users/test");
-        let paths = unix_claude_candidate_paths(
-            &home,
-            Some(std::ffi::OsString::from("/custom/pnpm")),
-        );
+        let paths =
+            unix_claude_candidate_paths(&home, Some(std::ffi::OsString::from("/custom/pnpm")));
         assert!(paths.contains(&PathBuf::from("/custom/pnpm").join("claude")));
         assert!(paths.contains(&home.join("Library").join("pnpm").join("claude")));
-        assert!(paths.contains(&home.join(".local").join("share").join("pnpm").join("claude")));
+        assert!(paths.contains(
+            &home
+                .join(".local")
+                .join("share")
+                .join("pnpm")
+                .join("claude")
+        ));
         assert!(paths.contains(&home.join(".pnpm").join("claude")));
         assert!(paths.contains(&home.join(".claude").join("local").join("claude")));
     }
@@ -2445,7 +2472,13 @@ mod tests {
                 .join("bin")
                 .join("claude")
         ));
-        assert!(paths.contains(&home.join(".local").join("share").join("pnpm").join("claude")));
+        assert!(paths.contains(
+            &home
+                .join(".local")
+                .join("share")
+                .join("pnpm")
+                .join("claude")
+        ));
         assert!(paths.contains(
             &home
                 .join(".local")
@@ -2456,9 +2489,7 @@ mod tests {
                 .join("claude")
         ));
         assert!(paths.contains(&home.join(".pnpm").join("claude")));
-        assert!(paths.contains(
-            &home.join(".pnpm").join("global").join("bin").join("claude")
-        ));
+        assert!(paths.contains(&home.join(".pnpm").join("global").join("bin").join("claude")));
     }
 
     #[test]

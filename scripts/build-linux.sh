@@ -21,14 +21,14 @@ TARGET="x86_64-unknown-linux-gnu"
 VERSION=$(node -p "require('./package.json').version")
 TAG="v${VERSION}"
 
-echo "==> Building ClaudePrism $TAG for Linux ($TARGET)"
+echo "==> Building TectonicEditor $TAG for Linux ($TARGET)"
 
 # Build
 export TECTONIC_DEP_BACKEND=pkg-config
 export CXXFLAGS="-std=c++17"
 export CFLAGS=""
 
-pnpm --filter @claude-prism/desktop tauri build --target "$TARGET"
+pnpm --filter @tectonic-editor/desktop tauri build --target "$TARGET"
 
 BUNDLE_DIR="apps/desktop/src-tauri/target/$TARGET/release/bundle"
 
@@ -37,11 +37,16 @@ DEB_PATH=$(find "$BUNDLE_DIR/deb" -name '*.deb' 2>/dev/null | head -1)
 RPM_PATH=$(find "$BUNDLE_DIR/rpm" -name '*.rpm' 2>/dev/null | head -1)
 APPIMAGE_PATH=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' 2>/dev/null | head -1)
 APPIMAGE_SIG=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage.sig' 2>/dev/null | head -1)
+APPIMAGE_UPLOAD_PATH=""
+if [ -n "$APPIMAGE_PATH" ]; then
+  APPIMAGE_UPLOAD_PATH="apps/desktop/src-tauri/target/TectonicEditor-Linux.AppImage"
+  cp "$APPIMAGE_PATH" "$APPIMAGE_UPLOAD_PATH"
+fi
 
 ASSETS=()
 [ -n "$DEB_PATH" ] && ASSETS+=("$DEB_PATH")
 [ -n "$RPM_PATH" ] && ASSETS+=("$RPM_PATH")
-[ -n "$APPIMAGE_PATH" ] && ASSETS+=("$APPIMAGE_PATH")
+[ -n "$APPIMAGE_UPLOAD_PATH" ] && ASSETS+=("$APPIMAGE_UPLOAD_PATH")
 
 if [ ${#ASSETS[@]} -eq 0 ]; then
   echo "Error: No build artifacts found in $BUNDLE_DIR"
@@ -66,7 +71,7 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
       const data = JSON.parse(fs.readFileSync('$LATEST_JSON', 'utf8'));
       data.platforms['linux-x86_64'] = {
         signature: \`$SIGNATURE\`,
-        url: 'https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-Linux.AppImage'
+        url: 'https://github.com/anomalyco/tectonic-editor/releases/download/$TAG/TectonicEditor-Linux.AppImage'
       };
       fs.writeFileSync('$LATEST_JSON', JSON.stringify(data, null, 2));
     "
@@ -74,12 +79,12 @@ if [ -n "$APPIMAGE_PATH" ] && [ -n "$APPIMAGE_SIG" ]; then
     cat > "$LATEST_JSON" <<EOF
 {
   "version": "$VERSION",
-  "notes": "ClaudePrism $TAG",
+  "notes": "TectonicEditor $TAG",
   "pub_date": "$PUB_DATE",
   "platforms": {
     "linux-x86_64": {
       "signature": "$SIGNATURE",
-      "url": "https://github.com/delibae/claude-prism/releases/download/$TAG/ClaudePrism-Linux.AppImage"
+      "url": "https://github.com/anomalyco/tectonic-editor/releases/download/$TAG/TectonicEditor-Linux.AppImage"
     }
   }
 }
@@ -93,11 +98,11 @@ fi
 
 # Upload to GitHub Release
 echo "==> Uploading to GitHub Release $TAG"
-gh release view "$TAG" --repo delibae/claude-prism >/dev/null 2>&1 || \
-  gh release create "$TAG" --repo delibae/claude-prism --title "ClaudePrism $TAG" --generate-notes
+gh release view "$TAG" --repo anomalyco/tectonic-editor >/dev/null 2>&1 || \
+  gh release create "$TAG" --repo anomalyco/tectonic-editor --title "TectonicEditor $TAG" --generate-notes
 
 gh release upload "$TAG" \
-  --repo delibae/claude-prism \
+  --repo anomalyco/tectonic-editor \
   --clobber \
   "${ASSETS[@]}"
 

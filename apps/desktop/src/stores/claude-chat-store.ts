@@ -406,27 +406,27 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
       };
     });
 
-    // Flush unsaved edits to disk so Claude reads the latest content
+    // Flush unsaved edits to disk so the selected AI provider reads the latest content
     if (docState.files.some((f) => f.isDirty)) {
       log.debug("saving dirty files...");
       await docState.saveAllFiles();
       log.debug("saveAllFiles done");
     }
 
-    // Snapshot before Claude edit
+    // Snapshot before AI edit
     if (projectPath) {
       try {
         log.debug("creating snapshot...");
         await useHistoryStore
           .getState()
-          .createSnapshot(projectPath, "[claude] Before Claude edit");
+          .createSnapshot(projectPath, "[ai] Before AI edit");
         log.debug("snapshot done");
       } catch {
-        /* snapshot failure should not block Claude */
+        /* snapshot failure should not block AI */
       }
     }
 
-    // Build prompt with full context for Claude
+    // Build prompt with the selected editor context
     let prompt = userPrompt;
     if (activeFile) {
       const selRange = docState.selectionRange;

@@ -169,7 +169,7 @@ describe("useClaudeChatStore.sendPrompt context assembly", () => {
     expect(state.saveAllFiles).not.toHaveBeenCalled();
     expect(createSnapshotMock).toHaveBeenCalledWith(
       "/project",
-      "[claude] Before Claude edit",
+      "[ai] Before AI edit",
     );
   });
 });

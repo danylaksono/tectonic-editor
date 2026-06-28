@@ -4,6 +4,8 @@ use tauri::{Emitter, WebviewWindow};
 
 const TARBALL_URL: &str =
     "https://github.com/K-Dense-AI/claude-scientific-skills/archive/refs/heads/main.tar.gz";
+const APP_CONFIG_DIR: &str = ".tectonic-editor";
+const LEGACY_CLAUDE_DIR: &str = ".claude";
 const SKILLS_SUBFOLDER: &str = "scientific-skills";
 
 // ─── Data Types ───
@@ -349,12 +351,36 @@ fn skill_categories() -> Vec<SkillCategory> {
 /// Resolve the target skills directory.
 fn skills_dir(project_path: Option<&str>) -> PathBuf {
     match project_path {
-        Some(p) => PathBuf::from(p).join(".claude").join("skills"),
+        Some(p) => PathBuf::from(p).join(APP_CONFIG_DIR).join("skills"),
         None => dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".claude")
+            .join(APP_CONFIG_DIR)
             .join("skills"),
     }
+}
+
+fn legacy_skills_dir(project_path: Option<&str>) -> PathBuf {
+    match project_path {
+        Some(p) => PathBuf::from(p).join(LEGACY_CLAUDE_DIR).join("skills"),
+        None => dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(LEGACY_CLAUDE_DIR)
+            .join("skills"),
+    }
+}
+
+fn resolved_skills_dir(project_path: Option<&str>) -> PathBuf {
+    let current = skills_dir(project_path);
+    if current.exists() {
+        return current;
+    }
+
+    let legacy = legacy_skills_dir(project_path);
+    if legacy.exists() {
+        return legacy;
+    }
+
+    current
 }
 
 /// Download and extract tarball.
@@ -520,7 +546,7 @@ pub async fn install_scientific_skills_global(
 }
 
 /// Ensure the target directory is creatable and writable.
-/// If creation fails (e.g. ~/.claude is owned by root), prompt for admin password via osascript.
+/// If creation fails (e.g. ~/.tectonic-editor is owned by root), prompt for admin password via osascript.
 fn ensure_target_writable(target: &Path) -> Result<(), String> {
     // Try without elevation first
     if std::fs::create_dir_all(target).is_ok() {
@@ -531,13 +557,13 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
     {
         let home = dirs::home_dir().ok_or("Could not determine home directory")?;
         let user = std::env::var("USER").unwrap_or_default();
-        let claude_dir = home.join(".claude");
+        let app_dir = home.join(APP_CONFIG_DIR);
 
         let script = format!(
             "mkdir -p '{}' && chown -R {} '{}'",
             target.display(),
             user,
-            claude_dir.display()
+            app_dir.display()
         );
 
         let output = std::process::Command::new("osascript")
@@ -555,7 +581,7 @@ fn ensure_target_writable(target: &Path) -> Result<(), String> {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(format!(
                 "Failed to fix directory permissions. Error: {}. \
-                 You can fix this manually by running: sudo chown -R $(whoami) ~/.claude",
+                 You can fix this manually by running: sudo chown -R $(whoami) ~/.tectonic-editor",
                 stderr.trim()
             ));
         }
@@ -652,7 +678,7 @@ async fn install_skills_to(
 
 #[tauri::command]
 pub async fn check_skills_installed(project_path: Option<String>) -> Result<SkillsStatus, String> {
-    let target = skills_dir(project_path.as_deref());
+    let target = resolved_skills_dir(project_path.as_deref());
 
     if !target.exists() {
         return Ok(SkillsStatus {
@@ -678,7 +704,7 @@ pub async fn check_skills_installed(project_path: Option<String>) -> Result<Skil
 
 #[tauri::command]
 pub async fn list_installed_skills(project_path: Option<String>) -> Result<Vec<SkillInfo>, String> {
-    let target = skills_dir(project_path.as_deref());
+    let target = resolved_skills_dir(project_path.as_deref());
 
     if !target.exists() {
         return Ok(Vec::new());
@@ -702,10 +728,14 @@ pub async fn list_installed_skills(project_path: Option<String>) -> Result<Vec<S
 
 #[tauri::command]
 pub async fn uninstall_scientific_skills(project_path: Option<String>) -> Result<(), String> {
-    let target = skills_dir(project_path.as_deref());
-
-    if target.exists() {
-        std::fs::remove_dir_all(&target).map_err(|e| format!("Failed to remove skills: {}", e))?;
+    for target in [
+        skills_dir(project_path.as_deref()),
+        legacy_skills_dir(project_path.as_deref()),
+    ] {
+        if target.exists() {
+            std::fs::remove_dir_all(&target)
+                .map_err(|e| format!("Failed to remove skills: {}", e))?;
+        }
     }
 
     Ok(())
@@ -725,8 +755,13 @@ pub async fn get_skill_content(
 ) -> Result<String, String> {
     // Try local (project-level first, then global)
     let locations: Vec<PathBuf> = match project_path.as_deref() {
-        Some(pp) => vec![skills_dir(Some(pp)), skills_dir(None)],
-        None => vec![skills_dir(None)],
+        Some(pp) => vec![
+            skills_dir(Some(pp)),
+            legacy_skills_dir(Some(pp)),
+            skills_dir(None),
+            legacy_skills_dir(None),
+        ],
+        None => vec![skills_dir(None), legacy_skills_dir(None)],
     };
 
     for base in &locations {
@@ -770,14 +805,17 @@ mod tests {
     #[test]
     fn test_skills_dir_global() {
         let dir = skills_dir(None);
-        assert!(dir.to_string_lossy().contains(".claude"));
+        assert!(dir.to_string_lossy().contains(".tectonic-editor"));
         assert!(dir.to_string_lossy().ends_with("skills"));
     }
 
     #[test]
     fn test_skills_dir_project() {
         let dir = skills_dir(Some("/tmp/my-project"));
-        assert_eq!(dir, PathBuf::from("/tmp/my-project/.claude/skills"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/my-project/.tectonic-editor/skills")
+        );
     }
 
     #[test]

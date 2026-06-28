@@ -1,4 +1,4 @@
-export const DEFAULT_CLAUDE_MD = `# TectonicEditor LaTeX Project
+export const DEFAULT_AI_PROJECT_GUIDE = `# TectonicEditor LaTeX Project
 
 Academic writing workspace powered by TectonicEditor. You are assisting with a LaTeX document project.
 
@@ -7,7 +7,7 @@ Academic writing workspace powered by TectonicEditor. You are assisting with a L
 - **LaTeX Engine**: Tectonic (handles packages and fonts automatically — no manual \`tlmgr\` needed)
 - **Python**: Available via \`uv\` with project-local \`.venv/\`. Use \`uv pip install <pkg>\` to add packages, \`uv run <script>\` to execute.
 - **Build Directory**: \`.prism/build/\` (persistent, do not modify directly)
-- **Version History**: \`.claudeprism/\` (automatic snapshots, do not modify)
+- **Version History**: \`.tectonic-editor/\` (automatic snapshots, do not modify)
 
 ## Project Structure
 
@@ -40,7 +40,7 @@ uv run python script.py                          # Run a script
 
 ## Scientific Skills
 
-If scientific skills are installed (\`~/.claude/skills/\` or \`.claude/skills/\`), you have access to 100+ domain-specific tools:
+If scientific skills are installed for your AI assistant, you may have access to domain-specific tools:
 
 - **Data Analysis**: pandas, numpy, scipy, statsmodels, scikit-learn, polars
 - **Visualization**: matplotlib, seaborn, plotly (save figures to \`figures/\` directory)
@@ -57,7 +57,7 @@ When generating figures with Python, always:
 ## Gotchas
 
 - Tectonic compiles with pdfTeX by default. For Unicode-heavy documents, add \`% !TEX program = xelatex\` or \`lualatex\` at the top of \`main.tex\`.
-- Do NOT create or modify files in \`.prism/\`, \`.claudeprism/\`, or \`.venv/\` — these are managed automatically.
+- Do NOT create or modify files in \`.prism/\`, \`.tectonic-editor/\`, or \`.venv/\` — these are managed automatically.
 - When modifying LaTeX, ensure matching \`\\begin{}\` / \`\\end{}\` pairs — mismatches cause hard-to-debug compile errors.
 - Large tables and figures should use \`\\begin{table}[htbp]\` / \`\\begin{figure}[htbp]\` for proper float placement.
 - If the user provides reference files in \`attachments/\`, review them before writing — they contain key context.

@@ -166,8 +166,7 @@ export function UvSetupDialog({ open, onClose }: UvSetupDialogProps) {
           {/* Info text */}
           {status === "ready" && venvReady && (
             <p className="text-muted-foreground text-xs leading-relaxed">
-              Claude Code will automatically use this environment when running
-              Python code. Use{" "}
+              AI tools can use this environment when running Python code. Use{" "}
               <code className="text-foreground">uv pip install</code> to add
               packages.
             </p>

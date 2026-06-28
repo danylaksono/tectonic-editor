@@ -1,25 +1,8 @@
 # Changelog
 
-## \[0.5.3]
+## [1.2.0]
 
-### Dependencies
+### Changed
 
-- Upgraded to `@claude-prism/desktop@0.5.3`
-
-## \[0.5.2]
-
-### Dependencies
-
-- Upgraded to `@claude-prism/desktop@0.5.2`
-
-## \[0.5.1]
-
-### Dependencies
-
-- Upgraded to `@claude-prism/desktop@0.5.1`
-
-## \[0.4.1]
-
-### Dependencies
-
-- Upgraded to `@claude-prism/desktop@0.5.0`
+- Reframed the project as TectonicEditor: an offline-first LaTeX editor with optional pluggable AI providers.
+- Renamed packages and release metadata under the `@tectonic-editor` namespace.

@@ -582,8 +582,9 @@ export const SlashCommandPicker: FC<SlashCommandPickerProps> = ({
       default: null,
       custom: (
         <p className="mt-1 px-4 text-center text-muted-foreground text-xs">
-          Add commands in <code className="px-1">.claude/commands/</code> or{" "}
-          <code className="px-1">~/.claude/commands/</code>
+          Add commands in{" "}
+          <code className="px-1">.tectonic-editor/commands/</code> or{" "}
+          <code className="px-1">~/.tectonic-editor/commands/</code>
         </p>
       ),
     };

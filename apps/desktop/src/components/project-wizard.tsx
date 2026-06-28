@@ -29,7 +29,7 @@ import {
   BIB_TEMPLATE,
 } from "@/lib/template-registry";
 import { TemplateGallery } from "@/components/template-gallery";
-import { DEFAULT_CLAUDE_MD } from "@/lib/default-claude-md";
+import { DEFAULT_AI_PROJECT_GUIDE } from "@/lib/default-ai-project-guide";
 
 // ─── Helpers ───
 
@@ -239,11 +239,11 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
       const projectPath = await join(projectFolder, projectName.trim());
       await mkdir(projectPath, { recursive: true });
 
-      // Create CLAUDE.md for Claude Code context
-      const claudeMdPath = await join(projectPath, "CLAUDE.md");
-      const claudeMdExists = await exists(claudeMdPath);
-      if (!claudeMdExists) {
-        await writeTextFile(claudeMdPath, DEFAULT_CLAUDE_MD);
+      // Create a provider-neutral guide for AI assistants and external agents.
+      const aiGuidePath = await join(projectPath, "AGENTS.md");
+      const aiGuideExists = await exists(aiGuidePath);
+      if (!aiGuideExists) {
+        await writeTextFile(aiGuidePath, DEFAULT_AI_PROJECT_GUIDE);
       }
 
       const mainTexPath = await join(projectPath, template.mainFileName);
@@ -341,8 +341,8 @@ function ScratchForm({ onBack }: { onBack: () => void }) {
                 What are you writing?
               </span>
               <p className="mt-0.5 text-muted-foreground text-xs leading-relaxed">
-                Describe your document and Claude will generate tailored
-                content.
+                Describe your document and your AI assistant will generate
+                tailored content.
               </p>
             </div>
             <Textarea

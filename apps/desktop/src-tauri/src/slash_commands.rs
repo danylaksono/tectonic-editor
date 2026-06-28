@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const APP_CONFIG_DIR: &str = ".tectonic-editor";
+const LEGACY_CLAUDE_DIR: &str = ".claude";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashCommand {
     pub id: String,
@@ -162,6 +165,45 @@ fn load_command_from_file(file_path: &Path, base_path: &Path, scope: &str) -> Op
     })
 }
 
+fn project_subdir(project_path: &str, subdir: &str) -> PathBuf {
+    PathBuf::from(project_path)
+        .join(APP_CONFIG_DIR)
+        .join(subdir)
+}
+
+fn legacy_project_subdir(project_path: &str, subdir: &str) -> PathBuf {
+    PathBuf::from(project_path)
+        .join(LEGACY_CLAUDE_DIR)
+        .join(subdir)
+}
+
+fn user_subdir(home_dir: &Path, subdir: &str) -> PathBuf {
+    home_dir.join(APP_CONFIG_DIR).join(subdir)
+}
+
+fn legacy_user_subdir(home_dir: &Path, subdir: &str) -> PathBuf {
+    home_dir.join(LEGACY_CLAUDE_DIR).join(subdir)
+}
+
+fn append_commands_from_dir(commands: &mut Vec<SlashCommand>, dir: &Path, scope: &str) {
+    if !dir.exists() {
+        return;
+    }
+
+    let mut md_files = Vec::new();
+    find_markdown_files(dir, &mut md_files);
+    for file_path in md_files {
+        if let Some(cmd) = load_command_from_file(&file_path, dir, scope) {
+            let already_loaded = commands.iter().any(|existing| {
+                existing.scope == cmd.scope && existing.full_command == cmd.full_command
+            });
+            if !already_loaded {
+                commands.push(cmd);
+            }
+        }
+    }
+}
+
 fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     if !dir.exists() {
         return;
@@ -193,7 +235,7 @@ fn find_markdown_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-/// Load skills from a `.claude/skills/` directory.
+/// Load skills from a TectonicEditor skills directory.
 /// Each skill is a subdirectory containing a `SKILL.md` file.
 fn load_skills_from_dir(dir: &Path, scope: &str) -> Vec<SlashCommand> {
     if !dir.exists() {
@@ -292,8 +334,8 @@ fn create_default_commands() -> Vec<SlashCommand> {
             scope: "default".to_string(),
             namespace: None,
             file_path: String::new(),
-            content: "Initialize project with CLAUDE.md guide".to_string(),
-            description: Some("Initialize project with CLAUDE.md guide".to_string()),
+            content: "Initialize project with AGENTS.md guide".to_string(),
+            description: Some("Initialize project with AGENTS.md guide".to_string()),
             allowed_tools: vec![],
             has_bash_commands: false,
             has_file_references: false,
@@ -324,50 +366,56 @@ pub async fn slash_commands_list(
 
     commands.extend(create_default_commands());
 
-    // Load project commands
+    // Load project commands from the TectonicEditor location, with legacy
+    // Claude-compatible commands still supported.
     if let Some(ref proj_path) = project_path {
-        let project_commands_dir = PathBuf::from(proj_path).join(".claude").join("commands");
-        if project_commands_dir.exists() {
-            let mut md_files = Vec::new();
-            find_markdown_files(&project_commands_dir, &mut md_files);
-            for file_path in md_files {
-                if let Some(cmd) =
-                    load_command_from_file(&file_path, &project_commands_dir, "project")
-                {
-                    commands.push(cmd);
-                }
-            }
-        }
+        append_commands_from_dir(
+            &mut commands,
+            &project_subdir(proj_path, "commands"),
+            "project",
+        );
+        append_commands_from_dir(
+            &mut commands,
+            &legacy_project_subdir(proj_path, "commands"),
+            "project",
+        );
     }
 
     // Load user commands
     if let Some(home_dir) = dirs::home_dir() {
-        let user_commands_dir = home_dir.join(".claude").join("commands");
-        if user_commands_dir.exists() {
-            let mut md_files = Vec::new();
-            find_markdown_files(&user_commands_dir, &mut md_files);
-            for file_path in md_files {
-                if let Some(cmd) = load_command_from_file(&file_path, &user_commands_dir, "user") {
-                    commands.push(cmd);
-                }
-            }
-        }
+        append_commands_from_dir(&mut commands, &user_subdir(&home_dir, "commands"), "user");
+        append_commands_from_dir(
+            &mut commands,
+            &legacy_user_subdir(&home_dir, "commands"),
+            "user",
+        );
     }
 
-    // Load installed skills (project-level first, then global)
+    // Load installed skills (project-level first, then global), including
+    // legacy Claude-compatible skill directories.
     if let Some(proj_path) = &project_path {
-        let project_skills_dir = PathBuf::from(proj_path).join(".claude").join("skills");
-        commands.extend(load_skills_from_dir(&project_skills_dir, "skill"));
+        let project_skill_dirs = [
+            project_subdir(proj_path, "skills"),
+            legacy_project_subdir(proj_path, "skills"),
+        ];
+        for dir in project_skill_dirs {
+            commands.extend(load_skills_from_dir(&dir, "skill"));
+        }
     }
     if let Some(home_dir) = dirs::home_dir() {
-        let global_skills_dir = home_dir.join(".claude").join("skills");
+        let global_skill_dirs = [
+            user_subdir(&home_dir, "skills"),
+            legacy_user_subdir(&home_dir, "skills"),
+        ];
         // Avoid duplicates if project and global have same skill
-        let existing_ids: std::collections::HashSet<String> =
+        let mut existing_ids: std::collections::HashSet<String> =
             commands.iter().map(|c| c.id.clone()).collect();
-        let global_skills = load_skills_from_dir(&global_skills_dir, "skill");
-        for skill in global_skills {
-            if !existing_ids.contains(&skill.id) {
-                commands.push(skill);
+        for dir in global_skill_dirs {
+            let global_skills = load_skills_from_dir(&dir, "skill");
+            for skill in global_skills {
+                if existing_ids.insert(skill.id.clone()) {
+                    commands.push(skill);
+                }
             }
         }
     }
@@ -404,15 +452,14 @@ pub async fn slash_command_save(
 
     let base_dir = if scope == "project" {
         if let Some(proj_path) = project_path {
-            PathBuf::from(proj_path).join(".claude").join("commands")
+            project_subdir(&proj_path, "commands")
         } else {
             return Err("Project path required for project scope".to_string());
         }
     } else {
-        dirs::home_dir()
-            .ok_or_else(|| "Could not find home directory".to_string())?
-            .join(".claude")
-            .join("commands")
+        let home_dir =
+            dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
+        user_subdir(&home_dir, "commands")
     };
 
     let mut file_path = base_dir.clone();
@@ -685,7 +732,10 @@ mod tests {
     #[test]
     fn test_real_skills_dir() {
         // Test against actual installed skills if available
-        let skills_dir = dirs::home_dir().unwrap().join(".claude").join("skills");
+        let skills_dir = dirs::home_dir()
+            .unwrap()
+            .join(APP_CONFIG_DIR)
+            .join("skills");
         if !skills_dir.exists() {
             eprintln!("SKIP: no skills installed at {:?}", skills_dir);
             return;
@@ -931,7 +981,7 @@ mod tests {
         // Verify file was created
         let file = dir
             .path()
-            .join(".claude")
+            .join(APP_CONFIG_DIR)
             .join("commands")
             .join("test-cmd.md");
         assert!(file.exists());
@@ -959,7 +1009,11 @@ mod tests {
         assert_eq!(cmd.allowed_tools, vec!["Bash", "Read"]);
 
         // Verify frontmatter in file
-        let file = dir.path().join(".claude").join("commands").join("lint.md");
+        let file = dir
+            .path()
+            .join(APP_CONFIG_DIR)
+            .join("commands")
+            .join("lint.md");
         let content = fs::read_to_string(&file).unwrap();
         assert!(content.starts_with("---\n"));
         assert!(content.contains("description: Lint all files"));
@@ -990,7 +1044,7 @@ mod tests {
         // Verify nested directory structure
         let file = dir
             .path()
-            .join(".claude")
+            .join(APP_CONFIG_DIR)
             .join("commands")
             .join("tools")
             .join("rust")

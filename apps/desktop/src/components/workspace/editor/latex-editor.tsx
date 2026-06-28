@@ -50,6 +50,7 @@ import {
 } from "@/stores/proposed-changes-store";
 import { useClaudeChatStore } from "@/stores/claude-chat-store";
 import { useHistoryStore, type FileDiff } from "@/stores/history-store";
+import { useProblemsStore, type DiagnosticItem } from "@/stores/problems-store";
 import {
   compileLatex,
   resolveCompileTarget,
@@ -78,7 +79,6 @@ import { ClaudeChatDrawer } from "@/components/claude-chat/claude-chat-drawer";
 import { ProposedChangesPanel } from "@/components/claude-chat/proposed-changes-panel";
 import { ImagePreview } from "./image-preview";
 import { SearchPanel } from "./search-panel";
-import { ProblemsPanel, type DiagnosticItem } from "./problems-panel";
 import { PdfViewer } from "@/components/workspace/preview/pdf-viewer";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { createLogger } from "@/lib/debug/logger";
@@ -152,7 +152,6 @@ export function LatexEditor() {
     total: 0,
     current: 0,
   });
-  const [diagnostics, setDiagnostics] = useState<DiagnosticItem[]>([]);
   const [selectionCoords, setSelectionCoords] = useState<{
     top: number;
     left: number;
@@ -165,6 +164,8 @@ export function LatexEditor() {
   const { resolvedTheme } = useTheme();
   const vimMode = useSettingsStore((s) => s.vimMode);
   const aiProvider = useSettingsStore((s) => s.aiProvider);
+  const setProblemDiagnostics = useProblemsStore((s) => s.setDiagnostics);
+  const clearProblemDiagnostics = useProblemsStore((s) => s.clearDiagnostics);
 
   const compileRef = useRef<() => void>(() => {});
   const isSearchOpenRef = useRef(false);
@@ -180,6 +181,13 @@ export function LatexEditor() {
   useEffect(() => {
     isSearchOpenRef.current = isSearchOpen;
   }, [isSearchOpen]);
+
+  useEffect(() => {
+    if (!activeFile || !isTextFile || isLargeFileNotLoaded) {
+      diagnosticsRef.current = [];
+      clearProblemDiagnostics();
+    }
+  }, [activeFile, isTextFile, isLargeFileNotLoaded, clearProblemDiagnostics]);
 
   // Proposed changes for active file
   const proposedChanges = useProposedChangesStore((s) => s.changes);
@@ -424,6 +432,8 @@ export function LatexEditor() {
   useEffect(() => {
     if (!containerRef.current || !isTextFile) return;
     const currentContent = getActiveFileContent();
+    diagnosticsRef.current = [];
+    clearProblemDiagnostics();
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (isMergeActiveRef.current) {
@@ -526,7 +536,7 @@ export function LatexEditor() {
         )
       ) {
         diagnosticsRef.current = diags;
-        setDiagnostics(diags);
+        setProblemDiagnostics(diags, activeFile?.relativePath ?? "main.tex");
       }
     });
 
@@ -818,9 +828,12 @@ export function LatexEditor() {
     };
   }, [
     activeFileId,
+    activeFile?.relativePath,
+    clearProblemDiagnostics,
     isTextFile,
     setContent,
     setCursorPosition,
+    setProblemDiagnostics,
     setSelectionRange,
   ]);
 
@@ -1332,51 +1345,7 @@ export function LatexEditor() {
         {/* Chat drawer — shown only when AI provider is configured */}
         {aiProvider !== "none" && <ClaudeChatDrawer />}
       </div>
-      {/* Text-editor-only bottom panels */}
-      {!isPdf &&
-        !isImage &&
-        !isLargeFileNotLoaded &&
-        diagnostics.length > 0 && (
-          <ProblemsPanel
-            diagnostics={diagnostics}
-            fileName={activeFile?.relativePath ?? "main.tex"}
-            onNavigate={(from) => {
-              const view = viewRef.current;
-              if (!view) return;
-              view.dispatch({
-                selection: { anchor: from },
-                effects: EditorView.scrollIntoView(from, { y: "center" }),
-              });
-              view.focus();
-            }}
-            onFixWithChat={
-              aiProvider !== "none"
-                ? (message, line) => {
-                    const fileName = activeFile?.relativePath ?? "main.tex";
-                    const ctx = `[Lint error in ${fileName}:${line}]\n[Error: ${message}]`;
-                    useClaudeChatStore
-                      .getState()
-                      .sendPrompt(`${ctx}\n\nFix this lint error.`);
-                  }
-                : undefined
-            }
-            onFixAllWithChat={
-              aiProvider !== "none"
-                ? () => {
-                    const fileName = activeFile?.relativePath ?? "main.tex";
-                    const errorList = diagnostics
-                      .map((d) => `- ${fileName}:${d.line} — ${d.message}`)
-                      .join("\n");
-                    useClaudeChatStore
-                      .getState()
-                      .sendPrompt(
-                        `[Lint errors in ${fileName}]\n${errorList}\n\nFix all these lint errors.`,
-                      );
-                  }
-                : undefined
-            }
-          />
-        )}
+      {/* Text-editor-only review panels */}
       {!isPdf && !isImage && !isLargeFileNotLoaded && activeFileChange && (
         <ProposedChangesPanel
           change={activeFileChange}

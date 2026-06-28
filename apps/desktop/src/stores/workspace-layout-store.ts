@@ -6,9 +6,12 @@ export type WorkspaceSidePanel = "files" | "outline" | "citations";
 interface WorkspaceLayoutState {
   sidePanelOpen: boolean;
   activeSidePanel: WorkspaceSidePanel;
+  problemsDrawerOpen: boolean;
   setSidePanelOpen: (open: boolean) => void;
   setActiveSidePanel: (panel: WorkspaceSidePanel) => void;
   toggleSidePanel: (panel: WorkspaceSidePanel) => void;
+  setProblemsDrawerOpen: (open: boolean) => void;
+  toggleProblemsDrawer: () => void;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
@@ -16,6 +19,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
     (set) => ({
       sidePanelOpen: true,
       activeSidePanel: "files",
+      problemsDrawerOpen: false,
       setSidePanelOpen: (open) => set({ sidePanelOpen: open }),
       setActiveSidePanel: (panel) =>
         set({ activeSidePanel: panel, sidePanelOpen: true }),
@@ -26,6 +30,9 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
           }
           return { activeSidePanel: panel, sidePanelOpen: true };
         }),
+      setProblemsDrawerOpen: (open) => set({ problemsDrawerOpen: open }),
+      toggleProblemsDrawer: () =>
+        set((state) => ({ problemsDrawerOpen: !state.problemsDrawerOpen })),
     }),
     {
       name: "tectonic-editor-workspace-layout",

@@ -8,14 +8,8 @@ import {
   MessageSquareIcon,
   MousePointerClickIcon,
 } from "lucide-react";
-
-export interface DiagnosticItem {
-  from: number;
-  to: number;
-  severity: string;
-  message: string;
-  line: number;
-}
+import type { DiagnosticItem } from "@/stores/problems-store";
+import { cn } from "@/lib/utils";
 
 interface ProblemsPanelProps {
   diagnostics: DiagnosticItem[];
@@ -23,6 +17,7 @@ interface ProblemsPanelProps {
   onNavigate: (from: number) => void;
   onFixWithChat?: (message: string, line: number) => void;
   onFixAllWithChat?: () => void;
+  className?: string;
 }
 
 function SeverityIcon({ severity }: { severity: string }) {
@@ -44,6 +39,7 @@ export function ProblemsPanel({
   onNavigate,
   onFixWithChat,
   onFixAllWithChat,
+  className,
 }: ProblemsPanelProps) {
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -53,7 +49,7 @@ export function ProblemsPanel({
   ).length;
 
   return (
-    <div className="border-border border-t bg-background">
+    <div className={cn("border-border border-t bg-background", className)}>
       {/* Header */}
       <div className="flex items-center">
         <button

@@ -78,6 +78,7 @@ const log = createLogger("sidebar");
 // ─── Table of Contents ───
 
 interface TocItem {
+  kind: "part" | "chapter" | "section" | "subsection" | "subsubsection";
   level: number;
   title: string;
   line: number;
@@ -100,6 +101,7 @@ function parseTableOfContents(content: string): TocItem[] {
     if (match) {
       const [, type, title] = match;
       toc.push({
+        kind: type as TocItem["kind"],
         level: levelMap[type] ?? 2,
         title: title.trim(),
         line: index + 1,
@@ -224,6 +226,10 @@ export function Sidebar({ activePanel }: SidebarProps) {
   const activeFileContent = useDocumentStore((s) => {
     const active = s.files.find((f) => f.id === s.activeFileId);
     return active?.content ?? "";
+  });
+  const activeFileName = useDocumentStore((s) => {
+    const active = s.files.find((f) => f.id === s.activeFileId);
+    return active?.relativePath ?? "No file selected";
   });
   const requestJumpToPosition = useDocumentStore(
     (s) => s.requestJumpToPosition,
@@ -765,26 +771,43 @@ export function Sidebar({ activePanel }: SidebarProps) {
 
         {activePanel === "outline" && (
           <div className="flex h-full flex-col">
-            <div className="flex h-8 shrink-0 items-center justify-center gap-2 border-sidebar-border border-b px-3">
-              <ListIcon className="size-3.5 text-muted-foreground" />
-              <span className="font-medium text-xs">Outline</span>
+            <div className="flex h-11 shrink-0 items-center gap-2 border-sidebar-border border-b px-3">
+              <ListIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-xs">Outline</span>
+                  {toc.length > 0 && (
+                    <span className="rounded bg-sidebar-accent px-1.5 py-0.5 text-[10px] text-sidebar-accent-foreground">
+                      {toc.length}
+                    </span>
+                  )}
+                </div>
+                <div className="truncate text-[10px] text-muted-foreground">
+                  {activeFileName}
+                </div>
+              </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-1">
               {toc.length > 0 ? (
                 toc.map((item, index) => (
                   <button
                     key={index}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-                    style={{ paddingLeft: `${(item.level - 1) * 12 + 8}px` }}
+                    className="flex h-7 w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                    style={{ paddingLeft: `${item.level * 10 + 8}px` }}
                     onClick={() => handleTocClick(item.line)}
                   >
                     <HashIcon className="size-3 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{item.title}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {item.title || "Untitled"}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {item.kind.replace("subsubsection", "subsub")}
+                    </span>
                   </button>
                 ))
               ) : (
-                <div className="px-2 py-1 text-muted-foreground text-xs">
-                  No sections found
+                <div className="px-2 py-3 text-muted-foreground text-xs">
+                  Add section headings to build an outline.
                 </div>
               )}
             </div>

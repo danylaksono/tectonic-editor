@@ -1,4 +1,4 @@
-# Contributing to ClaudePrism
+# Contributing to TectonicEditor
 
 Contributions are welcome! This guide covers the development environment, workflow, and testing.
 
@@ -37,8 +37,8 @@ vcpkg install harfbuzz[graphite2]:x64-windows freetype:x64-windows icu:x64-windo
 ### Setup
 
 ```bash
-git clone https://github.com/delibae/claude-prism.git
-cd claude-prism
+git clone https://github.com/anomalyco/tectonic-editor.git
+cd tectonic-editor
 pnpm install
 ```
 
@@ -57,21 +57,29 @@ pnpm build:desktop
 ## Project Structure
 
 ```
-claude-prism/
+tectonic-editor/
 ├── apps/
 │   └── desktop/              # Tauri desktop app
 │       ├── src/              # React frontend (TypeScript)
+│       │   ├── lib/ai/       # AI provider types, SSE parser
+│       │   ├── stores/       # Zustand state (documents, chat, AI, ...)
+│       │   ├── hooks/        # Custom hooks (AI events, keyboard)
+│       │   └── components/   # UI components
 │       └── src-tauri/        # Rust backend
 │           ├── src/
-│           │   ├── lib.rs           # Tauri plugin registration
+│           │   ├── ai/              # AI provider abstraction
+│           │   │   ├── mod.rs       # AiProvider trait & shared types
+│           │   │   ├── registry.rs  # Provider registry
+│           │   │   └── providers/   # Claude CLI, Anthropic API, OpenAI API
+│           │   ├── lib.rs           # Tauri command registration
 │           │   ├── history.rs       # Git-based version history
 │           │   ├── latex.rs         # Tectonic compilation & SyncTeX
-│           │   ├── claude.rs        # Claude CLI integration & sessions
+│           │   ├── claude.rs        # Claude CLI integration
 │           │   ├── slash_commands.rs # Slash command discovery & CRUD
 │           │   └── zotero.rs        # Zotero OAuth & citations
 │           └── Cargo.toml
-├── .github/workflows/        # CI/CD (build + release)
-├── biome.json                # Linter config
+├── .github/workflows/        # CI/CD (lint+test, multi-platform release)
+├── biome.json                # Linter/formatter config
 └── turbo.json                # Turborepo config
 ```
 
@@ -92,15 +100,11 @@ cd apps/desktop && pnpm test:watch
 cd apps/desktop/src-tauri && cargo test
 ```
 
-Current test counts:
-- **Frontend:** 89 tests (stores, components)
-- **Rust:** 114 tests (65 unit + 49 integration)
-
 ### What to test
 
 - **Unit tests:** Pure functions, parsers, data transformations
 - **Integration tests:** Filesystem/git operations using `tempfile` crate for isolation
-- Tests live in `#[cfg(test)] mod tests` blocks within each source file (modules are private)
+- Tests live in `#[cfg(test)] mod tests` blocks within each source file
 
 ### Adding Rust integration tests
 
@@ -120,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_example() {
-        // For async Tauri commands that don't need the runtime
+        // For async Tauri commands
     }
 }
 ```
@@ -138,13 +142,11 @@ Rust code follows standard `rustfmt` conventions.
 
 ### Pre-commit Hook
 
-A [Husky](https://typicode.github.io/husky/) pre-commit hook runs automatically on every commit. It checks and auto-fixes staged files via `biome check --staged --write`, so lint issues are caught before they reach the repository.
-
-The hook is set up automatically when you run `pnpm install`.
+A [Husky](https://typicode.github.io/husky/) pre-commit hook runs automatically on every commit. It checks and auto-fixes staged files via `biome check --staged --write`.
 
 ### CI
 
-A GitHub Actions workflow runs `biome ci` on every pull request and push to `main`. PRs that fail lint checks cannot be merged.
+GitHub Actions runs `biome check` + tests on every PR and push to `main`. Tagged releases (`v*`) trigger multi-platform builds (Linux, macOS ARM/Intel, Windows).
 
 ## Pull Request Process
 
@@ -152,7 +154,7 @@ A GitHub Actions workflow runs `biome ci` on every pull request and push to `mai
 2. Create a feature branch (`git checkout -b feat/my-feature`)
 3. Make your changes
 4. Run tests: `pnpm test` (frontend) and `cargo test` (Rust)
-5. Commit — the pre-commit hook will auto-fix lint issues on staged files
+5. Commit — the pre-commit hook will auto-fix lint issues
 6. Push to your fork and open a PR
 7. CI will verify lint and tests pass
 

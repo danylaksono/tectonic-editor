@@ -9,19 +9,13 @@
   Compile locally. Add AI when you want it. No accounts required.
 </p>
 
-<p align="center">
-  <img src="./assets/demo/main.webp" alt="TectonicEditor" width="800" />
-</p>
-
-<p align="center">
-  <a href="https://github.com/anomalyco/tectonic-editor/releases/latest">
-    <img src="https://img.shields.io/github/v/release/anomalyco/tectonic-editor?style=flat-square&label=latest&color=green" alt="Latest Release" />
-  </a>
-</p>
-
 ---
 
 TectonicEditor compiles LaTeX documents offline with an embedded [Tectonic](https://tectonic-typesetting.github.io/) engine — no TeX Live required. AI is **optional** and pluggable: bring your own API key for Anthropic, OpenAI (or any compatible endpoint like Hermes), or use the Claude Code CLI.
+
+## Why?
+
+The editor is designed for **researchers, scientists, and academics** who want a **beautiful, offline-first LaTeX editor** with optional AI assistance. It is **cross-platform** (macOS, Windows, Linux) and **open-source**. It was forked from [Claude-prism](delibae/claude-prism) which blends Claude Code with a LaTeX editor. I want to have the same editor experience but with optional AI assistance, so that users can compile LaTeX offline without needing an account or internet connection.
 
 ## Features
 
@@ -50,7 +44,7 @@ TectonicEditor compiles LaTeX documents offline with an embedded [Tectonic](http
 
 ## Install
 
-Download from [GitHub Releases](https://github.com/anomalyco/tectonic-editor/releases).
+Download from [GitHub Releases](https://github.com/danylaksono/tectonic-editor/releases).
 
 ## Develop
 
@@ -89,7 +83,7 @@ New AI providers implement the `AiProvider` trait. See [CONTRIBUTING.md](./CONTR
 
 ## Acknowledgments
 
-Forked from [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui).
+Forked from [Claude-prism](https://github.com/delibae/claude-prism) by [delibae](https://github.com/delibae). The project itself is inspired by [Open Prism](https://github.com/assistant-ui/open-prism) by [assistant-ui](https://github.com/assistant-ui).
 
 ## License
 

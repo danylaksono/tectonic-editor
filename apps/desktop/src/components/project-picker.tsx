@@ -122,11 +122,7 @@ export function ProjectPicker() {
             <FolderPlusIcon className="size-5" />
             New Project
           </Button>
-          <Button
-            onClick={handleOpenFolder}
-            size="lg"
-            className="flex-1 gap-2"
-          >
+          <Button onClick={handleOpenFolder} size="lg" className="flex-1 gap-2">
             <FolderOpenIcon className="size-5" />
             Open Folder
           </Button>

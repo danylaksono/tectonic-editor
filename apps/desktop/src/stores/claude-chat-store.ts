@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useDocumentStore } from "./document-store";
 import { useHistoryStore } from "./history-store";
 import { createLogger } from "@/lib/debug/logger";
-import type { AiRequest, AiContext } from "@/lib/ai/types";
+import type { AiRequest, AiContext, AiMessage } from "@/lib/ai/types";
 
 const log = createLogger("claude");
 
@@ -15,6 +15,76 @@ export function offsetToLineCol(
   const before = content.slice(0, offset);
   const lines = before.split("\n");
   return { line: lines.length, col: lines[lines.length - 1].length + 1 };
+}
+
+/** Convert ClaudeStreamMessage history to generic AiMessage[] for API providers */
+function toAiMessages(msgs: ClaudeStreamMessage[]): AiMessage[] {
+  const result: AiMessage[] = [];
+  for (const msg of msgs) {
+    if (msg.type === "system") continue;
+    const role =
+      msg.type === "user"
+        ? "user"
+        : msg.type === "result"
+          ? "tool"
+          : "assistant";
+    if (!msg.message?.content) continue;
+    result.push({ role, content: msg.message.content as AiMessage["content"] });
+  }
+  return result;
+}
+
+export interface ModelInfo {
+  id: string;
+  name: string;
+  desc: string;
+}
+
+export function getModelsForProvider(providerId: string): ModelInfo[] {
+  switch (providerId) {
+    case "claude-cli":
+      return [
+        {
+          id: "sonnet",
+          name: "Sonnet",
+          desc: "Fast, efficient for most tasks",
+        },
+        { id: "opus", name: "Opus", desc: "Most capable, complex reasoning" },
+        { id: "haiku", name: "Haiku", desc: "Fastest, simple tasks" },
+        {
+          id: "opusplan",
+          name: "OpusPlan",
+          desc: "Opus for planning, Sonnet for execution",
+        },
+      ];
+    case "anthropic":
+      return [
+        {
+          id: "claude-sonnet-4-20250514",
+          name: "Sonnet 4",
+          desc: "Fast, efficient for most tasks",
+        },
+        {
+          id: "claude-opus-4-20250514",
+          name: "Opus 4",
+          desc: "Most capable, complex reasoning",
+        },
+        {
+          id: "claude-haiku-4-20250514",
+          name: "Haiku 4",
+          desc: "Fastest, simple tasks",
+        },
+      ];
+    case "openai":
+      return [
+        { id: "gpt-4o", name: "GPT-4o", desc: "Most capable, multimodal" },
+        { id: "gpt-4o-mini", name: "GPT-4o Mini", desc: "Fast, efficient" },
+        { id: "o1", name: "o1", desc: "Complex reasoning" },
+        { id: "o1-mini", name: "o1 Mini", desc: "Fast reasoning" },
+      ];
+    default:
+      return [];
+  }
 }
 
 // ─── Types ───
@@ -174,11 +244,11 @@ interface ClaudeChatState {
     imageDataUrl?: string;
   }[];
 
-  /** Currently selected model (passed per-prompt to Claude CLI) */
-  selectedModel: "sonnet" | "opus" | "haiku" | "opusplan";
-  setSelectedModel: (model: "sonnet" | "opus" | "haiku" | "opusplan") => void;
+  /** Currently selected model (passed per-prompt) */
+  selectedModel: string;
+  setSelectedModel: (model: string) => void;
 
-  /** Effort level for Opus 4.6 adaptive reasoning */
+  /** Effort level (Claude-specific, hidden for API providers) */
   effortLevel: "low" | "medium" | "high";
   setEffortLevel: (level: "low" | "medium" | "high") => void;
 
@@ -388,7 +458,7 @@ export const useClaudeChatStore = create<ClaudeChatState>()((set, get) => ({
         projectPath,
         prompt,
         model: selectedModel,
-        messages: [],
+        messages: toAiMessages(activeTab?.messages ?? []),
         context:
           aiContext ??
           (contextOverride

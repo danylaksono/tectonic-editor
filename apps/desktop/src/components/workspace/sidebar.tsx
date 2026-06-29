@@ -42,6 +42,7 @@ import { useTheme } from "next-themes";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
 import type { WorkspaceSidePanel } from "@/stores/workspace-layout-store";
+import { parseDocumentOutline, type OutlineItem } from "@/lib/document-outline";
 import { cn } from "@/lib/utils";
 import { ZoteroPanel, ZoteroHeader } from "@/components/workspace/zotero-panel";
 import { Button } from "@/components/ui/button";
@@ -75,40 +76,26 @@ import { createLogger } from "@/lib/debug/logger";
 
 const log = createLogger("sidebar");
 
-// ─── Table of Contents ───
+// ─── Document Outline ───
 
-interface TocItem {
-  kind: "part" | "chapter" | "section" | "subsection" | "subsubsection";
-  level: number;
-  title: string;
-  line: number;
+function outlineKindLabel(item: OutlineItem) {
+  if (item.kind === "subsubsection") return "subsub";
+  return item.kind;
 }
 
-function parseTableOfContents(content: string): TocItem[] {
-  const lines = content.split("\n");
-  const toc: TocItem[] = [];
-  const sectionRegex =
-    /\\(section|subsection|subsubsection|chapter|part)\*?\s*\{([^}]*)\}/;
-  const levelMap: Record<string, number> = {
-    part: 0,
-    chapter: 1,
-    section: 2,
-    subsection: 3,
-    subsubsection: 4,
-  };
-  lines.forEach((line, index) => {
-    const match = line.match(sectionRegex);
-    if (match) {
-      const [, type, title] = match;
-      toc.push({
-        kind: type as TocItem["kind"],
-        level: levelMap[type] ?? 2,
-        title: title.trim(),
-        line: index + 1,
-      });
-    }
-  });
-  return toc;
+function OutlineIcon({ item }: { item: OutlineItem }) {
+  if (item.kind === "figure") {
+    return <ImageIcon className="size-3 shrink-0 text-muted-foreground" />;
+  }
+  if (item.kind === "table") {
+    return (
+      <FileSpreadsheetIcon className="size-3 shrink-0 text-muted-foreground" />
+    );
+  }
+  if (item.kind === "bibliography") {
+    return <FileTextIcon className="size-3 shrink-0 text-muted-foreground" />;
+  }
+  return <HashIcon className="size-3 shrink-0 text-muted-foreground" />;
 }
 
 // ─── File Tree Builder ───
@@ -479,9 +466,17 @@ export function Sidebar({ activePanel }: SidebarProps) {
   }, []);
 
   // Outline
-  const toc = useMemo(
-    () => parseTableOfContents(activeFileContent),
+  const outlineItems = useMemo(
+    () => parseDocumentOutline(activeFileContent),
     [activeFileContent],
+  );
+  const structureItems = useMemo(
+    () => outlineItems.filter((item) => item.group === "structure"),
+    [outlineItems],
+  );
+  const objectItems = useMemo(
+    () => outlineItems.filter((item) => item.group === "objects"),
+    [outlineItems],
   );
   const handleTocClick = useCallback(
     (line: number) => {
@@ -776,9 +771,9 @@ export function Sidebar({ activePanel }: SidebarProps) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-xs">Outline</span>
-                  {toc.length > 0 && (
+                  {outlineItems.length > 0 && (
                     <span className="rounded bg-sidebar-accent px-1.5 py-0.5 text-[10px] text-sidebar-accent-foreground">
-                      {toc.length}
+                      {outlineItems.length}
                     </span>
                   )}
                 </div>
@@ -788,26 +783,63 @@ export function Sidebar({ activePanel }: SidebarProps) {
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {toc.length > 0 ? (
-                toc.map((item, index) => (
-                  <button
-                    key={index}
-                    className="flex h-7 w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
-                    style={{ paddingLeft: `${item.level * 10 + 8}px` }}
-                    onClick={() => handleTocClick(item.line)}
-                  >
-                    <HashIcon className="size-3 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {item.title || "Untitled"}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {item.kind.replace("subsubsection", "subsub")}
-                    </span>
-                  </button>
-                ))
+              {outlineItems.length > 0 ? (
+                <>
+                  {structureItems.length > 0 && (
+                    <>
+                      <div className="px-2 py-1 font-medium text-[10px] text-muted-foreground">
+                        Structure
+                      </div>
+                      {structureItems.map((item, index) => (
+                        <button
+                          key={`${item.line}-${item.kind}-${index}`}
+                          className="flex h-7 w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                          style={{
+                            paddingLeft: `${item.level * 10 + 8}px`,
+                          }}
+                          onClick={() => handleTocClick(item.line)}
+                        >
+                          <OutlineIcon item={item} />
+                          <span className="min-w-0 flex-1 truncate">
+                            {item.title || "Untitled"}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {outlineKindLabel(item)}
+                          </span>
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {objectItems.length > 0 && (
+                    <>
+                      <div className="mt-1 px-2 py-1 font-medium text-[10px] text-muted-foreground">
+                        Objects
+                      </div>
+                      {objectItems.map((item, index) => (
+                        <button
+                          key={`${item.line}-${item.kind}-${item.title}-${index}`}
+                          className="flex h-7 w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent/50"
+                          style={{
+                            paddingLeft: `${Math.max(0, item.level - 1) * 8 + 8}px`,
+                          }}
+                          onClick={() => handleTocClick(item.line)}
+                        >
+                          <OutlineIcon item={item} />
+                          <span className="min-w-0 flex-1 truncate">
+                            {item.title || "Untitled"}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {outlineKindLabel(item)}
+                          </span>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </>
               ) : (
                 <div className="px-2 py-3 text-muted-foreground text-xs">
-                  Add section headings to build an outline.
+                  Add sections, labels, figures, or tables to build an outline.
                 </div>
               )}
             </div>

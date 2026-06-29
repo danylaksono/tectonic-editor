@@ -902,9 +902,6 @@ export function PdfPreview() {
                 ) : (
                   <CheckCircle2Icon className="size-3.5" />
                 )}
-                <span>
-                  {previewIsStale ? "Edited since compile" : "Preview current"}
-                </span>
               </div>
             )}
           {!isSaving && !isCompiling && !compileError && isTexActive && (

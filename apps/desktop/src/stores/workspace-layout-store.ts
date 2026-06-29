@@ -7,11 +7,14 @@ interface WorkspaceLayoutState {
   sidePanelOpen: boolean;
   activeSidePanel: WorkspaceSidePanel;
   problemsDrawerOpen: boolean;
+  focusMode: boolean;
   setSidePanelOpen: (open: boolean) => void;
   setActiveSidePanel: (panel: WorkspaceSidePanel) => void;
   toggleSidePanel: (panel: WorkspaceSidePanel) => void;
   setProblemsDrawerOpen: (open: boolean) => void;
   toggleProblemsDrawer: () => void;
+  setFocusMode: (open: boolean) => void;
+  toggleFocusMode: () => void;
 }
 
 export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
@@ -20,6 +23,7 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
       sidePanelOpen: true,
       activeSidePanel: "files",
       problemsDrawerOpen: false,
+      focusMode: false,
       setSidePanelOpen: (open) => set({ sidePanelOpen: open }),
       setActiveSidePanel: (panel) =>
         set({ activeSidePanel: panel, sidePanelOpen: true }),
@@ -33,6 +37,8 @@ export const useWorkspaceLayoutStore = create<WorkspaceLayoutState>()(
       setProblemsDrawerOpen: (open) => set({ problemsDrawerOpen: open }),
       toggleProblemsDrawer: () =>
         set((state) => ({ problemsDrawerOpen: !state.problemsDrawerOpen })),
+      setFocusMode: (open) => set({ focusMode: open }),
+      toggleFocusMode: () => set((state) => ({ focusMode: !state.focusMode })),
     }),
     {
       name: "tectonic-editor-workspace-layout",

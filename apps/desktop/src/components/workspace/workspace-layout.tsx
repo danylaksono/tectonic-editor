@@ -8,6 +8,8 @@ import {
   ChevronUpIcon,
   FolderIcon,
   ListIcon,
+  Maximize2Icon,
+  Minimize2Icon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   PanelRightCloseIcon,
@@ -191,6 +193,8 @@ export function WorkspaceLayout() {
   const togglePreview = usePreviewStore((s) => s.toggle);
   const sidePanelOpen = useWorkspaceLayoutStore((s) => s.sidePanelOpen);
   const activeSidePanel = useWorkspaceLayoutStore((s) => s.activeSidePanel);
+  const focusMode = useWorkspaceLayoutStore((s) => s.focusMode);
+  const toggleFocusMode = useWorkspaceLayoutStore((s) => s.toggleFocusMode);
 
   // Cmd+\ / Ctrl+\ toggles the PDF preview pane.
   useEffect(() => {
@@ -199,10 +203,18 @@ export function WorkspaceLayout() {
         e.preventDefault();
         togglePreview();
       }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "f"
+      ) {
+        e.preventDefault();
+        toggleFocusMode();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [togglePreview]);
+  }, [togglePreview, toggleFocusMode]);
 
   if (!initialized) {
     return (
@@ -214,11 +226,11 @@ export function WorkspaceLayout() {
 
   return (
     <div className="flex h-full bg-background">
-      <ActivityRail />
+      {!focusMode && <ActivityRail />}
 
       <div className="relative flex min-w-0 flex-1 flex-col">
         <PanelGroup direction="horizontal" className="min-h-0 min-w-0 flex-1">
-          {sidePanelOpen && (
+          {!focusMode && sidePanelOpen && (
             <>
               <Panel defaultSize={18} minSize={12} maxSize={32}>
                 <Sidebar activePanel={activeSidePanel} />
@@ -247,6 +259,22 @@ export function WorkspaceLayout() {
                   <PanelRightOpenIcon className="size-4" />
                 )}
               </button>
+              <button
+                type="button"
+                onClick={toggleFocusMode}
+                title={
+                  focusMode
+                    ? "Exit focus mode (Cmd+Shift+F)"
+                    : "Enter focus mode (Cmd+Shift+F)"
+                }
+                className="absolute bottom-3 left-3 z-40 rounded-md border bg-background/85 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {focusMode ? (
+                  <Minimize2Icon className="size-4" />
+                ) : (
+                  <Maximize2Icon className="size-4" />
+                )}
+              </button>
             </div>
           </Panel>
 
@@ -261,7 +289,7 @@ export function WorkspaceLayout() {
           )}
         </PanelGroup>
 
-        <WorkspaceProblemsDrawer />
+        {!focusMode && <WorkspaceProblemsDrawer />}
       </div>
     </div>
   );

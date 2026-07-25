@@ -47,7 +47,12 @@ import {
   type ProjectFile,
 } from "@/stores/document-store";
 import { useHistoryStore } from "@/stores/history-store";
-import type { WorkspaceSidePanel } from "@/stores/workspace-layout-store";
+import { usePreviewStore } from "@/stores/preview-store";
+import {
+  useWorkspaceLayoutStore,
+  type WorkspaceSidePanel,
+} from "@/stores/workspace-layout-store";
+import { synctexView } from "@/lib/latex-compiler";
 import { parseProjectOutline, type OutlineItem } from "@/lib/document-outline";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useProjectStore } from "@/stores/project-store";
@@ -79,6 +84,7 @@ import {
 } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { createLogger } from "@/lib/debug/logger";
 import { GrammarPanel } from "@/components/workspace/grammar-panel";
@@ -302,6 +308,8 @@ export function Sidebar({ activePanel }: SidebarProps) {
   const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const folders = useDocumentStore((s) => s.folders);
+  const readerMode = useWorkspaceLayoutStore((s) => s.readerMode);
+  const requestPdfLocation = usePreviewStore((s) => s.requestLocation);
   const recentProjects = useProjectStore((s) => s.recentProjects);
   const lastModified = projectRoot
     ? recentProjects.find((p) => p.path === projectRoot)?.lastModified
@@ -677,8 +685,33 @@ export function Sidebar({ activePanel }: SidebarProps) {
       } else {
         requestJumpToPosition(position);
       }
+
+      // In reader mode the editor is hidden, so the outline browses the PDF:
+      // forward-search the heading's line and scroll the preview to it.
+      if (readerMode && projectRoot) {
+        void synctexView(projectRoot, targetFile.relativePath, item.line).then(
+          (location) => {
+            if (location) {
+              requestPdfLocation(location);
+            } else {
+              toast.error("Could not find this section in the PDF", {
+                description:
+                  "Recompile the document to refresh its SyncTeX data.",
+              });
+            }
+          },
+        );
+      }
     },
-    [activeFileId, files, setActiveFile, requestJumpToPosition],
+    [
+      activeFileId,
+      files,
+      setActiveFile,
+      requestJumpToPosition,
+      readerMode,
+      projectRoot,
+      requestPdfLocation,
+    ],
   );
 
   // Check if a name already exists in the given folder

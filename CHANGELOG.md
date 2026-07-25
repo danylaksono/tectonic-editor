@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Reader mode (`Ctrl`/`Cmd` + `Shift` + `R`, or the button on the PDF pane):
+  hides the editor and gives the PDF the full workspace next to the activity
+  rail and side panel. Clicking an outline entry jumps the PDF to that section
+  via SyncTeX, so the outline works as a table of contents for reading.
+  Double-clicking the PDF (or navigating to a source location) brings the
+  editor back at the matching line.
+
 ## [1.4.2] - 2026-07-23
 
 Opal 1.4.2 delivers portable Windows, Linux, and macOS packages built and

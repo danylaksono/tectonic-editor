@@ -361,6 +361,8 @@ export function PdfPreview() {
   );
   const reviewMode = useWorkspaceLayoutStore((state) => state.reviewMode);
   const setReviewMode = useWorkspaceLayoutStore((state) => state.setReviewMode);
+  const readerMode = useWorkspaceLayoutStore((state) => state.readerMode);
+  const setReaderMode = useWorkspaceLayoutStore((state) => state.setReaderMode);
   const reviewComments = useReviewStore((state) => state.comments);
   const reviewLoading = useReviewStore((state) => state.loading);
   const loadReviewProject = useReviewStore((state) => state.loadProject);
@@ -595,10 +597,11 @@ export function PdfPreview() {
 
       const state = useDocumentStore.getState();
       const needsSwitch = state.activeFileId !== targetFile.id;
-      const leavingReview = reviewMode;
-      if (leavingReview) {
-        setReviewMode(false);
-      }
+      // Both review and reader mode hide the editor — a jump into source has
+      // to bring it back before the cursor move means anything.
+      const leavingReview = reviewMode || readerMode;
+      if (reviewMode) setReviewMode(false);
+      if (readerMode) setReaderMode(false);
       if (needsSwitch) {
         setActiveFile(targetFile.id);
       }
@@ -620,7 +623,15 @@ export function PdfPreview() {
         requestJumpToPosition(offset);
       }
     },
-    [files, reviewMode, setReviewMode, setActiveFile, requestJumpToPosition],
+    [
+      files,
+      reviewMode,
+      setReviewMode,
+      readerMode,
+      setReaderMode,
+      setActiveFile,
+      requestJumpToPosition,
+    ],
   );
 
   const handleSynctexClick = useCallback(
@@ -712,6 +723,8 @@ export function PdfPreview() {
 
       const state = useDocumentStore.getState();
       const needsSwitch = state.activeFileId !== targetFile.id;
+      const leavingReader = readerMode;
+      if (leavingReader) setReaderMode(false);
       if (needsSwitch) setActiveFile(targetFile.id);
 
       const fileContent = targetFile.content ?? "";
@@ -728,13 +741,13 @@ export function PdfPreview() {
         );
       }
 
-      if (needsSwitch) {
+      if (needsSwitch || leavingReader) {
         setTimeout(() => requestJumpToPosition(offset), 100);
       } else {
         requestJumpToPosition(offset);
       }
     },
-    [files, setActiveFile, requestJumpToPosition],
+    [files, readerMode, setReaderMode, setActiveFile, requestJumpToPosition],
   );
 
   const navigateToSource = useCallback(() => {

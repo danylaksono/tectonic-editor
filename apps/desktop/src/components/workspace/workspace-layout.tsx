@@ -4,6 +4,7 @@ import {
   AlertCircleIcon,
   AlertTriangleIcon,
   BookOpenIcon,
+  BookOpenTextIcon,
   BookTypeIcon,
   ChevronDownIcon,
   ChevronUpIcon,
@@ -320,6 +321,7 @@ export function WorkspaceLayout() {
   const initialized = useDocumentStore((s) => s.initialized);
   const previewVisible = usePreviewStore((s) => s.visible);
   const togglePreview = usePreviewStore((s) => s.toggle);
+  const setPreviewVisible = usePreviewStore((s) => s.setVisible);
   const sidePanelOpen = useWorkspaceLayoutStore((s) => s.sidePanelOpen);
   const activeSidePanel = useWorkspaceLayoutStore((s) => s.activeSidePanel);
   const setActiveSidePanel = useWorkspaceLayoutStore(
@@ -327,6 +329,8 @@ export function WorkspaceLayout() {
   );
   const focusMode = useWorkspaceLayoutStore((s) => s.focusMode);
   const toggleFocusMode = useWorkspaceLayoutStore((s) => s.toggleFocusMode);
+  const readerMode = useWorkspaceLayoutStore((s) => s.readerMode);
+  const toggleReaderMode = useWorkspaceLayoutStore((s) => s.toggleReaderMode);
   const reviewMode = useWorkspaceLayoutStore((s) => s.reviewMode);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
   const tutorialProject = useOnboardingStore((s) => s.tutorialProject);
@@ -365,12 +369,21 @@ export function WorkspaceLayout() {
     if (projectRoot !== tutorialProject) openedTutorialProject.current = null;
   }, [tutorialProject, projectRoot, setActiveSidePanel]);
 
+  // Reader mode shows the PDF regardless of the preview flag; keep the flag
+  // set so leaving the mode lands back on the editor + preview split.
+  useEffect(() => {
+    if (readerMode) setPreviewVisible(true);
+  }, [readerMode, setPreviewVisible]);
+
   // Cmd+\ / Ctrl+\ toggles the PDF preview pane.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
         e.preventDefault();
-        togglePreview();
+        // In reader mode there is no split to collapse — "hide the preview"
+        // can only sensibly mean "bring the editor back".
+        if (readerMode) toggleReaderMode();
+        else togglePreview();
       }
       if (
         (e.metaKey || e.ctrlKey) &&
@@ -380,10 +393,19 @@ export function WorkspaceLayout() {
         e.preventDefault();
         toggleFocusMode();
       }
+      // Cmd+Shift+R / Ctrl+Shift+R toggles reader mode (PDF + side panel).
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "r"
+      ) {
+        e.preventDefault();
+        toggleReaderMode();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [togglePreview, toggleFocusMode]);
+  }, [togglePreview, toggleFocusMode, toggleReaderMode, readerMode]);
 
   if (!initialized) {
     return (
@@ -417,7 +439,7 @@ export function WorkspaceLayout() {
             </>
           )}
 
-          {!reviewMode && (
+          {!reviewMode && !readerMode && (
             <Panel
               key="latex-editor"
               id="latex-editor"
@@ -468,16 +490,16 @@ export function WorkspaceLayout() {
             </Panel>
           )}
 
-          {(reviewMode || previewVisible) && (
+          {(reviewMode || readerMode || previewVisible) && (
             <Fragment key="pdf-preview">
-              {!reviewMode && (
+              {!reviewMode && !readerMode && (
                 <PanelResizeHandle className="w-px bg-border transition-colors hover:bg-ring" />
               )}
 
               <Panel
                 id="pdf-preview"
                 order={3}
-                defaultSize={reviewMode ? 100 : 42.5}
+                defaultSize={reviewMode ? 100 : readerMode ? 82 : 42.5}
                 minSize={25}
               >
                 <div
@@ -487,13 +509,40 @@ export function WorkspaceLayout() {
                   )}
                 >
                   <PdfPreview />
+                  {/* Reader mode toggle — mirrors the editor's focus-mode
+                      button, and is the only way back to the editor when the
+                      editor pane itself is hidden. */}
+                  {!reviewMode && (
+                    <button
+                      type="button"
+                      onClick={toggleReaderMode}
+                      title={
+                        readerMode
+                          ? "Show editor (Cmd+Shift+R)"
+                          : "Hide editor — read the PDF with the outline (Cmd+Shift+R)"
+                      }
+                      aria-label="Reader mode"
+                      aria-pressed={readerMode}
+                      className="absolute bottom-3 left-3 z-40 rounded-md border bg-background/85 p-1.5 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      {readerMode ? (
+                        <PanelLeftOpenIcon className="size-4" />
+                      ) : (
+                        <BookOpenTextIcon className="size-4" />
+                      )}
+                    </button>
+                  )}
                 </div>
               </Panel>
             </Fragment>
           )}
         </PanelGroup>
 
-        {!focusMode && !reviewMode && <WorkspaceProblemsDrawer />}
+        {/* Problems point into the editor, so they're only useful when it's
+            on screen; the status bar stays for page/compile state. */}
+        {!focusMode && !reviewMode && !readerMode && (
+          <WorkspaceProblemsDrawer />
+        )}
         {!focusMode && !reviewMode && <StatusBar />}
       </div>
     </div>

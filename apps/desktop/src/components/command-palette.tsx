@@ -6,6 +6,7 @@ import {
   SaveIcon,
   PanelRightIcon,
   MaximizeIcon,
+  BookOpenTextIcon,
   PanelLeftIcon,
   SettingsIcon,
   SunIcon,
@@ -161,6 +162,16 @@ export function CommandPalette() {
               <MaximizeIcon />
               Toggle focus mode
               <CommandShortcut>⌘⇧F</CommandShortcut>
+            </CommandItem>
+            <CommandItem
+              value="toggle reader mode pdf only hide editor outline"
+              onSelect={() =>
+                run(() => useWorkspaceLayoutStore.getState().toggleReaderMode())
+              }
+            >
+              <BookOpenTextIcon />
+              Toggle reader mode (PDF only)
+              <CommandShortcut>⌘⇧R</CommandShortcut>
             </CommandItem>
             <CommandItem
               onSelect={() =>

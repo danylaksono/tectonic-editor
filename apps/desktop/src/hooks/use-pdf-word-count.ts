@@ -12,15 +12,19 @@ export interface PdfWordCountState {
   counting: boolean;
   /** Pages processed so far, for progress on long documents. */
   progress: { done: number; total: number } | null;
-  /** Run the count. Deliberately explicit — extracting the text of every page
-   *  is far too expensive to do automatically after each compile. */
-  run: () => void;
+  /** Whether the PDF count is the one currently being displayed. */
+  showing: boolean;
+  /** Switch between the source count and the PDF count, counting on first use.
+   *  Deliberately explicit — extracting the text of every page is far too
+   *  expensive to do automatically after each compile. */
+  toggle: () => void;
 }
 
 export function usePdfWordCount(): PdfWordCountState {
   const pdfRevision = useDocumentStore((state) => state.pdfRevision);
   const [result, setResult] = useState<PdfWordCount | null>(null);
   const [counting, setCounting] = useState(false);
+  const [showing, setShowing] = useState(false);
   const [progress, setProgress] = useState<{
     done: number;
     total: number;
@@ -33,10 +37,19 @@ export function usePdfWordCount(): PdfWordCountState {
     generationRef.current++;
     setResult(null);
     setCounting(false);
+    setShowing(false);
     setProgress(null);
   }, [pdfRevision]);
 
-  const run = useCallback(() => {
+  const toggle = useCallback(() => {
+    if (counting) return;
+
+    // Already counted: flip between the two numbers without recounting.
+    if (result) {
+      setShowing((current) => !current);
+      return;
+    }
+
     const data = getCurrentPdfBytes();
     if (!data) return;
 
@@ -63,6 +76,7 @@ export function usePdfWordCount(): PdfWordCountState {
       .then((counted) => {
         if (isStale()) return;
         setResult(counted);
+        setShowing(true);
       })
       .catch((error: unknown) => {
         if (isStale()) return;
@@ -73,7 +87,7 @@ export function usePdfWordCount(): PdfWordCountState {
         setCounting(false);
         setProgress(null);
       });
-  }, []);
+  }, [counting, result]);
 
-  return { result, counting, progress, run };
+  return { result, counting, progress, showing, toggle };
 }

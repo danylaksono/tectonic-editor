@@ -13,10 +13,12 @@
   that page. This complements the existing source-derived outline, and works
   even when SyncTeX data is stale. Requires the `hyperref` package, which
   writes the bookmarks.
-- Word count of the compiled PDF, from the status bar's word counter. This
-  counts what actually reached the page — excluding LaTeX markup, the
+- Word count of the compiled PDF, from the status bar's word counter. Clicking
+  it counts what actually reached the page — excluding LaTeX markup, the
   preamble, and comments — which is what thesis and journal word limits mean.
-  Words hyphenated across a line break are counted once.
+  Words hyphenated across a line break are counted once. Clicking again
+  switches back to the LaTeX source count, and recompiling resets it.
+- **Copy** on the toolbar that appears when text is selected in the PDF.
 - Code folding in the editor, for sections, environments, and comment blocks,
   via the new fold gutter. `.bib` files fold per entry and gained bracket
   matching and auto-closing brackets.
@@ -35,6 +37,15 @@
 - Pages now render straight into MuPDF's RGBA output instead of being
   converted pixel by pixel in JavaScript, cutting a few million operations per
   page render.
+
+### Fixed
+
+- Restored text extraction from the compiled PDF. The reader for MuPDF's
+  structured-text output still expected an older nested format, so every line
+  came back empty — leaving the PDF's selection layer with nothing in it, so
+  selecting text, **Copy selected text**, and **Capture & Ask** all returned
+  nothing. Text lines are also positioned on their true baseline now instead
+  of a descender height too low.
 
 ## [1.4.2] - 2026-07-23
 

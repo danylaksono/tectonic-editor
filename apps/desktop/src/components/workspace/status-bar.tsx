@@ -91,6 +91,7 @@ export function StatusBar() {
   // limits actually mean. Computed on demand — see usePdfWordCount.
   const pdfWordCount = usePdfWordCount();
   const pdfCountAvailable = pageCount > 0;
+  const showingPdfCount = pdfWordCount.showing && pdfWordCount.result !== null;
 
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-sidebar-border border-t bg-sidebar px-3 text-[11px] text-muted-foreground">
@@ -177,22 +178,24 @@ export function StatusBar() {
             <button
               type="button"
               className="rounded px-1 tabular-nums hover:bg-sidebar-accent disabled:cursor-default"
-              onClick={pdfWordCount.run}
+              onClick={pdfWordCount.toggle}
               disabled={pdfWordCount.counting}
               title={
-                pdfWordCount.result
-                  ? `${pdfWordCount.result.words.toLocaleString()} words and ${pdfWordCount.result.characters.toLocaleString()} characters in the compiled PDF, across ${pdfWordCount.result.pages} ${
-                      pdfWordCount.result.pages === 1 ? "page" : "pages"
-                    }. Click to recount. The source count is ${wordCount.toLocaleString()}, which includes LaTeX markup.`
-                  : `${wordCount.toLocaleString()} words of LaTeX source, including markup. Click to count the words actually rendered in the PDF.`
+                showingPdfCount
+                  ? `${pdfWordCount.result?.characters.toLocaleString()} characters across ${pdfWordCount.result?.pages} ${
+                      pdfWordCount.result?.pages === 1 ? "page" : "pages"
+                    } of compiled PDF. Click to show the LaTeX source count (${wordCount.toLocaleString()}), which includes markup.`
+                  : `${wordCount.toLocaleString()} words of LaTeX source, including markup. Click to ${
+                      pdfWordCount.result ? "show" : "count"
+                    } the words actually rendered in the PDF.`
               }
             >
               {pdfWordCount.counting
                 ? pdfWordCount.progress
                   ? `Counting ${pdfWordCount.progress.done}/${pdfWordCount.progress.total}…`
                   : "Counting…"
-                : pdfWordCount.result
-                  ? `${pdfWordCount.result.words.toLocaleString()} words in PDF`
+                : showingPdfCount
+                  ? `${pdfWordCount.result?.words.toLocaleString()} words in PDF`
                   : `${wordCount.toLocaleString()} words`}
             </button>
           ) : (

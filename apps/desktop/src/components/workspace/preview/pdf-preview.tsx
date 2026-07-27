@@ -22,7 +22,9 @@ import {
   SparklesIcon,
   GaugeIcon,
   SearchIcon,
+  CopyIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import {
@@ -810,6 +812,11 @@ export function PdfPreview() {
   const pdfToolbarActions: ToolbarAction[] = useMemo(
     () => [
       {
+        id: "copy",
+        label: "Copy",
+        icon: <CopyIcon className="size-4" />,
+      },
+      {
         id: "highlight",
         label: "Highlight",
         icon: <HighlighterIcon className="size-4" />,
@@ -846,7 +853,12 @@ export function PdfPreview() {
       const sel = pdfSelection;
       setPdfSelection(null);
       window.getSelection()?.removeAllRanges();
-      if (actionId === "comment") {
+      if (actionId === "copy") {
+        void navigator.clipboard.writeText(sel.text).then(
+          () => toast.success("Copied to clipboard"),
+          () => toast.error("Could not copy the selected text"),
+        );
+      } else if (actionId === "comment") {
         void startReviewComment({
           kind: "text",
           page: sel.pageNumber,

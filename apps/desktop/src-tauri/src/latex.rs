@@ -667,6 +667,17 @@ fn lower_thread_priority() {
 
 // --- Tectonic Compilation ---
 
+/// Resolve `SOURCE_DATE_EPOCH` into a build timestamp for reproducible builds.
+///
+/// Returns `None` when the variable is unset, empty, or not a valid Unix
+/// timestamp, so the caller can fall back to the current system time instead of
+/// silently producing a 1970 date.
+fn source_date_epoch() -> Option<std::time::SystemTime> {
+    let raw = std::env::var("SOURCE_DATE_EPOCH").ok()?;
+    let secs = raw.trim().parse::<u64>().ok()?;
+    std::time::SystemTime::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs))
+}
+
 pub(crate) fn compile_with_tectonic(
     work_dir: &Path,
     main_file: &str,
@@ -677,6 +688,12 @@ pub(crate) fn compile_with_tectonic(
     use tectonic::status::NoopStatusBackend;
 
     let mut status = NoopStatusBackend {};
+
+    // Tectonic defaults the session clock to UNIX_EPOCH when unset, which makes
+    // `\today` render as January 1, 1970. The CLI calls `build_date_from_env`;
+    // we resolve it ourselves because that helper panics on a malformed
+    // SOURCE_DATE_EPOCH, which would take down the compile subprocess.
+    let build_date = source_date_epoch().unwrap_or_else(std::time::SystemTime::now);
 
     let config = PersistentConfig::open(false)
         .map_err(|e| format!("Failed to open tectonic config: {}", e))?;
@@ -702,6 +719,7 @@ pub(crate) fn compile_with_tectonic(
         .format_name("latex")
         .format_cache_path(format_cache)
         .output_format(OutputFormat::Pdf)
+        .build_date(build_date)
         .pass(if single_pass {
             PassSetting::Tex
         } else {

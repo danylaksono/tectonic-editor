@@ -8,6 +8,8 @@ import {
   lineNumbers,
   highlightActiveLine,
   highlightActiveLineGutter,
+  rectangularSelection,
+  crosshairCursor,
   scrollPastEnd,
   Decoration,
   ViewPlugin,
@@ -29,11 +31,16 @@ import {
   redoDepth,
   selectAll,
 } from "@codemirror/commands";
-import { syntaxTreeAvailable } from "@codemirror/language";
+import {
+  syntaxTreeAvailable,
+  foldGutter,
+  foldKeymap,
+} from "@codemirror/language";
 import { useTheme } from "next-themes";
 import {
   search,
   highlightSelectionMatches,
+  selectNextOccurrence,
   SearchQuery,
   setSearchQuery as setSearchQueryEffect,
   findNext,
@@ -1416,6 +1423,20 @@ export function LatexEditor() {
             return true;
           },
         },
+        // Find next/previous for the query the custom SearchPanel put into
+        // CodeMirror's search state. Bound here rather than by spreading
+        // searchKeymap, which would take Mod-f over to CodeMirror's own panel.
+        {
+          key: "F3",
+          run: findNext,
+          shift: findPrevious,
+          preventDefault: true,
+        },
+        {
+          key: "Mod-d",
+          run: selectNextOccurrence,
+          preventDefault: true,
+        },
         {
           key: "Escape",
           run: () => {
@@ -1578,11 +1599,21 @@ export function LatexEditor() {
       extensions: [
         compileKeymap,
         lineNumbers(),
+        // The LaTeX grammar already supplies fold ranges for every environment
+        // and for part/chapter/section/subsection/subsubsection, and latex()
+        // registers a fold service for comment blocks — none of it was
+        // reachable without a gutter to click. foldGutter() pulls in
+        // codeFolding() itself.
+        foldGutter(),
         drawSelection(),
         highlightActiveLine(),
         highlightActiveLineGutter(),
+        // Alt-drag column selection, for editing tabular bodies.
+        rectangularSelection(),
+        crosshairCursor(),
         history(),
         keymap.of([
+          ...foldKeymap,
           {
             key: "Tab",
             run: (view) => latexTabCompletion(view) || indentMore(view),
@@ -1825,6 +1856,24 @@ export function LatexEditor() {
           ".cm-lineNumbers .cm-gutterElement": {
             paddingLeft: "8px",
             paddingRight: "4px",
+          },
+          // Fold arrows stay quiet until hovered — a LaTeX document makes
+          // almost every environment and section foldable, and full-contrast
+          // markers down the whole gutter read as clutter.
+          ".cm-foldGutter .cm-gutterElement": {
+            color: "var(--muted-foreground)",
+            opacity: "0.45",
+            transition: "opacity 0.15s ease",
+          },
+          ".cm-foldGutter .cm-gutterElement:hover": { opacity: "1" },
+          // The library default is a hard-coded light grey box, unreadable on
+          // dark themes.
+          ".cm-foldPlaceholder": {
+            backgroundColor:
+              "color-mix(in srgb, var(--muted-foreground) 15%, transparent)",
+            border:
+              "1px solid color-mix(in srgb, var(--muted-foreground) 35%, transparent)",
+            color: "var(--muted-foreground)",
           },
           ".cm-content": {
             paddingLeft: "8px",

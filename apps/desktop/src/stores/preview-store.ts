@@ -7,6 +7,10 @@ export interface PdfLocationRequest {
   width: number;
   height: number;
   requestId: number;
+  /** False for destinations that are only a page — a PDF bookmark has no
+   *  source rectangle, and flashing the SyncTeX box at the page corner would
+   *  point at nothing. Defaults to true. */
+  highlight?: boolean;
 }
 
 interface PreviewState {

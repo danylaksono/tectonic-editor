@@ -2,6 +2,8 @@ import type {
   StructuredTextData,
   LinkData,
   PageSize,
+  PdfOutlineItem,
+  Rect,
   WorkerResponse,
 } from "./types";
 import { toast } from "sonner";
@@ -18,6 +20,15 @@ export interface MupdfClient {
   drawPage(docId: number, pageIndex: number, dpi: number): Promise<ImageData>;
   getPageText(docId: number, pageIndex: number): Promise<StructuredTextData>;
   getPageLinks(docId: number, pageIndex: number): Promise<LinkData[]>;
+  /** The PDF's own bookmark tree, flattened. Empty when it has none. */
+  getOutline(docId: number): Promise<PdfOutlineItem[]>;
+  /** Matches of `needle` on one page, each as the rectangles it covers. */
+  searchPage(
+    docId: number,
+    pageIndex: number,
+    needle: string,
+    maxHits?: number,
+  ): Promise<Rect[][]>;
   renderThumbnail(
     docId: number,
     pageIndex: number,
@@ -132,6 +143,9 @@ function createClient(): MupdfClient {
       call("drawPage", docId, pageIndex, dpi),
     getPageText: (docId, pageIndex) => call("getPageText", docId, pageIndex),
     getPageLinks: (docId, pageIndex) => call("getPageLinks", docId, pageIndex),
+    getOutline: (docId) => call("getOutline", docId),
+    searchPage: (docId, pageIndex, needle, maxHits = 200) =>
+      call("searchPage", docId, pageIndex, needle, maxHits),
     renderThumbnail: (docId, pageIndex, targetWidth) =>
       call("renderThumbnail", docId, pageIndex, targetWidth),
     destroy: () => worker.terminate(),

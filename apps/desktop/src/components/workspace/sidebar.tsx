@@ -44,8 +44,11 @@ import {
   useDocumentStore,
   resolveTexRoot,
   hasDocumentclass,
+  hasPdfData,
   type ProjectFile,
 } from "@/stores/document-store";
+import { usePdfOutline } from "@/hooks/use-pdf-outline";
+import type { PdfOutlineItem } from "@/lib/mupdf/types";
 import { useHistoryStore } from "@/stores/history-store";
 import { usePreviewStore } from "@/stores/preview-store";
 import {
@@ -640,6 +643,39 @@ export function Sidebar({ activePanel }: SidebarProps) {
     () => outlineItems.filter((item) => item.group === "objects"),
     [outlineItems],
   );
+
+  // The PDF's own bookmarks — the compiled structure with real page numbers,
+  // which is what reader mode wants as a table of contents. Only fetched while
+  // that view is selected.
+  const [outlineSource, setOutlineSource] = useState<"source" | "pdf">(
+    "source",
+  );
+  const pdfRevision = useDocumentStore((state) => state.pdfRevision);
+  const pdfAvailable = useMemo(() => hasPdfData(), [pdfRevision]);
+  const showingPdfOutline = outlineSource === "pdf" && pdfAvailable;
+  const { items: pdfOutlineItems, loading: pdfOutlineLoading } =
+    usePdfOutline(showingPdfOutline);
+  const minPdfOutlineLevel = useMemo(
+    () => pdfOutlineItems.reduce((min, item) => Math.min(min, item.level), 9),
+    [pdfOutlineItems],
+  );
+
+  const handlePdfOutlineClick = useCallback(
+    (item: PdfOutlineItem) => {
+      if (item.page == null) return;
+      // A bookmark resolves to a page, not a rectangle, so ask for the page
+      // without the SyncTeX highlight flash.
+      requestPdfLocation({
+        page: item.page,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        highlight: false,
+      });
+    },
+    [requestPdfLocation],
+  );
   // Normalize indentation to the shallowest heading present, so article-class
   // documents (sections only) start flush left instead of pre-indented
   const minStructureLevel = useMemo(
@@ -1023,21 +1059,98 @@ export function Sidebar({ activePanel }: SidebarProps) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-xs">Outline</span>
-                  {outlineItems.length > 0 && (
+                  {(showingPdfOutline
+                    ? pdfOutlineItems.length
+                    : outlineItems.length) > 0 && (
                     <span className="rounded bg-sidebar-accent px-1.5 py-0.5 text-[10px] text-sidebar-accent-foreground">
-                      {outlineItems.length}
+                      {showingPdfOutline
+                        ? pdfOutlineItems.length
+                        : outlineItems.length}
                     </span>
                   )}
                 </div>
                 <div className="truncate text-[10px] text-muted-foreground">
-                  {files.find((f) => f.id === outlineRootId)?.relativePath ??
-                    activeFileName}
-                  {outlineFileCount > 1 && ` · ${outlineFileCount} files`}
+                  {showingPdfOutline
+                    ? "PDF bookmarks"
+                    : (files.find((f) => f.id === outlineRootId)
+                        ?.relativePath ?? activeFileName)}
+                  {!showingPdfOutline &&
+                    outlineFileCount > 1 &&
+                    ` · ${outlineFileCount} files`}
                 </div>
               </div>
+              {/* Source vs. compiled structure. Only offered once a PDF
+                  exists, since bookmarks come from the build. */}
+              {pdfAvailable && (
+                <div className="flex shrink-0 items-center rounded-md bg-sidebar-accent/60 p-0.5">
+                  {(["source", "pdf"] as const).map((source) => (
+                    <button
+                      key={source}
+                      type="button"
+                      className={cn(
+                        "rounded px-1.5 py-0.5 text-[10px] transition-colors",
+                        outlineSource === source
+                          ? "bg-sidebar text-sidebar-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-sidebar-foreground",
+                      )}
+                      onClick={() => setOutlineSource(source)}
+                      title={
+                        source === "source"
+                          ? "Outline parsed from the LaTeX source"
+                          : "The compiled PDF's own bookmarks, with page numbers"
+                      }
+                    >
+                      {source === "source" ? "Source" : "PDF"}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-1 pb-3">
-              {outlineItems.length > 0 ? (
+              {showingPdfOutline ? (
+                pdfOutlineItems.length > 0 ? (
+                  pdfOutlineItems.map((item, index) => (
+                    <button
+                      key={`${item.page}-${item.level}-${item.title}-${index}`}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left text-xs transition-colors hover:bg-sidebar-accent/50",
+                        item.level === minPdfOutlineLevel &&
+                          "mt-1.5 font-medium first:mt-0",
+                        item.page == null && "opacity-50",
+                      )}
+                      style={{
+                        paddingLeft: `${Math.max(0, item.level - minPdfOutlineLevel) * 12 + 8}px`,
+                      }}
+                      disabled={item.page == null}
+                      title={
+                        item.page == null
+                          ? "This bookmark has no resolvable destination"
+                          : `Page ${item.page}`
+                      }
+                      onClick={() => handlePdfOutlineClick(item)}
+                    >
+                      <span className="min-w-0 flex-1 truncate">
+                        {item.title || "Untitled"}
+                      </span>
+                      {item.page != null && (
+                        <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                          {item.page}
+                        </span>
+                      )}
+                    </button>
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center gap-2 px-4 py-10 text-center">
+                    <ListTreeIcon className="size-6 text-muted-foreground/40" />
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      {pdfOutlineLoading
+                        ? "Reading the PDF's bookmarks…"
+                        : "This PDF has no bookmarks. Load the hyperref package to have LaTeX write them."}
+                    </p>
+                  </div>
+                )
+              ) : outlineItems.length > 0 ? (
                 <>
                   {structureItems.length > 0 && (
                     <>

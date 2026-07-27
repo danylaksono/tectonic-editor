@@ -4,12 +4,37 @@
 
 ### Added
 
+- Find in the PDF (`Ctrl`/`Cmd` + `F` with the PDF pane focused, or the search
+  button on the PDF toolbar). Matches are highlighted across the whole
+  document, with next/previous navigation and a match counter; results stream
+  in as the document is swept, so long documents stay responsive.
+- A **PDF** view in the outline panel, listing the compiled document's own
+  bookmarks with their page numbers. Clicking an entry jumps the preview to
+  that page. This complements the existing source-derived outline, and works
+  even when SyncTeX data is stale. Requires the `hyperref` package, which
+  writes the bookmarks.
+- Word count of the compiled PDF, from the status bar's word counter. This
+  counts what actually reached the page — excluding LaTeX markup, the
+  preamble, and comments — which is what thesis and journal word limits mean.
+  Words hyphenated across a line break are counted once.
+- Code folding in the editor, for sections, environments, and comment blocks,
+  via the new fold gutter. `.bib` files fold per entry and gained bracket
+  matching and auto-closing brackets.
+- `Ctrl`/`Cmd` + `D` selects the next occurrence of the current selection, and
+  `F3` / `Shift` + `F3` step through matches of the current search. Alt-drag
+  makes a rectangular (column) selection.
 - Reader mode (`Ctrl`/`Cmd` + `Shift` + `R`, or the button on the PDF pane):
   hides the editor and gives the PDF the full workspace next to the activity
   rail and side panel. Clicking an outline entry jumps the PDF to that section
   via SyncTeX, so the outline works as a table of contents for reading.
   Double-clicking the PDF (or navigating to a source location) brings the
   editor back at the matching line.
+
+### Improved
+
+- Pages now render straight into MuPDF's RGBA output instead of being
+  converted pixel by pixel in JavaScript, cutting a few million operations per
+  page render.
 
 ## [1.4.2] - 2026-07-23
 

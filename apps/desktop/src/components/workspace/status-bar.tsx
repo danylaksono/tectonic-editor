@@ -21,6 +21,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { usePreviewStore } from "@/stores/preview-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { countProposedChunks } from "@/lib/proposed-chunks";
+import { usePdfWordCount } from "@/hooks/use-pdf-word-count";
 
 function countWords(text: string): number {
   const matches = text.trim().match(/\S+/g);
@@ -85,6 +86,11 @@ export function StatusBar() {
     ? Math.abs(selectionRange.end - selectionRange.start)
     : 0;
   const stalePdf = Boolean(compileError && hasPdfData());
+
+  // Word count of the *rendered* document, which is what thesis and journal
+  // limits actually mean. Computed on demand — see usePdfWordCount.
+  const pdfWordCount = usePdfWordCount();
+  const pdfCountAvailable = pageCount > 0;
 
   return (
     <div className="flex h-6 shrink-0 items-center gap-3 border-sidebar-border border-t bg-sidebar px-3 text-[11px] text-muted-foreground">
@@ -166,7 +172,32 @@ export function StatusBar() {
             {activeFile.relativePath}
           </span>
         )}
-        {isTextFile && <span className="tabular-nums">{wordCount} words</span>}
+        {isTextFile &&
+          (pdfCountAvailable ? (
+            <button
+              type="button"
+              className="rounded px-1 tabular-nums hover:bg-sidebar-accent disabled:cursor-default"
+              onClick={pdfWordCount.run}
+              disabled={pdfWordCount.counting}
+              title={
+                pdfWordCount.result
+                  ? `${pdfWordCount.result.words.toLocaleString()} words and ${pdfWordCount.result.characters.toLocaleString()} characters in the compiled PDF, across ${pdfWordCount.result.pages} ${
+                      pdfWordCount.result.pages === 1 ? "page" : "pages"
+                    }. Click to recount. The source count is ${wordCount.toLocaleString()}, which includes LaTeX markup.`
+                  : `${wordCount.toLocaleString()} words of LaTeX source, including markup. Click to count the words actually rendered in the PDF.`
+              }
+            >
+              {pdfWordCount.counting
+                ? pdfWordCount.progress
+                  ? `Counting ${pdfWordCount.progress.done}/${pdfWordCount.progress.total}…`
+                  : "Counting…"
+                : pdfWordCount.result
+                  ? `${pdfWordCount.result.words.toLocaleString()} words in PDF`
+                  : `${wordCount.toLocaleString()} words`}
+            </button>
+          ) : (
+            <span className="tabular-nums">{wordCount} words</span>
+          ))}
         {isTextFile && (
           <span
             className="hidden items-center gap-1 tabular-nums lg:flex"

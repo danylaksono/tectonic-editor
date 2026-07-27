@@ -104,20 +104,52 @@ methods.drawPage = (
   const page = doc.loadPage(pageIndex);
   const scale = dpi / 72;
   const matrix = mupdf.Matrix.scale(scale, scale);
-  // alpha=false so the PDF's white background is rendered opaquely (RGB, 3 bytes/pixel)
-  const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
+
+  // Render straight into an RGBA pixmap rather than page.toPixmap(alpha=false).
+  // An alpha=false pixmap is 3 bytes/pixel, which then has to be interleaved
+  // into RGBA in JS — ~4M iterations for an A4 page at 150 DPI, on every
+  // render. Allocating the pixmap with alpha and clearing it to opaque white
+  // first gives MuPDF's draw device a 4-byte-per-pixel target, so the result
+  // is already in ImageData's layout and the JS side only does a bulk copy.
+  const deviceBounds = mupdf.Rect.transform(page.getBounds(), matrix);
+  const pixmap = new mupdf.Pixmap(
+    mupdf.ColorSpace.DeviceRGB,
+    deviceBounds,
+    true,
+  );
+  // 255 across every component — opaque white, matching the white background
+  // the previous alpha=false render produced.
+  pixmap.clear(255);
+
+  // The draw device maps into pixmap space, which deviceBounds already
+  // accounts for, so the scale belongs on the page run rather than here.
+  const device = new mupdf.DrawDevice(mupdf.Matrix.identity, pixmap);
+  // run() (not runPageContents) also draws annotations and widgets, matching
+  // the showExtras=true the previous toPixmap call passed.
+  page.run(device, matrix);
+  device.close();
+  device.destroy();
+
   const w = pixmap.getWidth();
   const h = pixmap.getHeight();
-  // getPixels() returns a live view into the WASM heap — copy out to RGBA
-  // *before* destroying the pixmap (destroying first is a use-after-free).
-  const rgb = pixmap.getPixels();
-  // Convert RGB (3 bytes/pixel) → RGBA (4 bytes/pixel) for ImageData
-  const rgba = new Uint8ClampedArray(w * h * 4);
-  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
-    rgba[j] = rgb[i];
-    rgba[j + 1] = rgb[i + 1];
-    rgba[j + 2] = rgb[i + 2];
-    rgba[j + 3] = 255; // fully opaque
+  // getPixels() returns a live view into the WASM heap — copy out *before*
+  // destroying the pixmap (destroying first is a use-after-free).
+  const pixels = pixmap.getPixels();
+  const stride = pixmap.getStride();
+  const rowBytes = w * 4;
+  const rgba = new Uint8ClampedArray(h * rowBytes);
+  if (stride === rowBytes) {
+    rgba.set(pixels.subarray(0, h * rowBytes));
+  } else {
+    // Padded rows — copy row by row. MuPDF doesn't pad its own allocations,
+    // but the layout isn't contractual, and a stride mismatch would otherwise
+    // shear the image.
+    for (let y = 0; y < h; y++) {
+      rgba.set(
+        pixels.subarray(y * stride, y * stride + rowBytes),
+        y * rowBytes,
+      );
+    }
   }
   pixmap.destroy();
   page.destroy();
@@ -188,6 +220,88 @@ methods.getPageText = (docId: number, pageIndex: number): unknown => {
   });
 
   return { blocks };
+};
+
+/** Guards against a malformed or hostile bookmark tree — neither bound is
+ * reachable by a real document. */
+const MAX_OUTLINE_ITEMS = 5000;
+const MAX_OUTLINE_DEPTH = 12;
+
+methods.getOutline = (docId: number): unknown[] => {
+  const doc = documentMap.get(docId);
+  if (!doc) return [];
+
+  const root = doc.loadOutline();
+  if (!root) return [];
+
+  const flat: { title: string; page: number | null; level: number }[] = [];
+
+  const walk = (items: any[], level: number): void => {
+    if (level > MAX_OUTLINE_DEPTH) return;
+    for (const item of items) {
+      if (flat.length >= MAX_OUTLINE_ITEMS) return;
+
+      // MuPDF resolves the destination for most bookmarks itself; fall back to
+      // resolving the URI for the ones it leaves unresolved.
+      let page = typeof item.page === "number" ? item.page : -1;
+      if (page < 0 && item.uri) {
+        try {
+          const resolved = doc.resolveLink(item.uri);
+          if (typeof resolved === "number") page = resolved;
+        } catch {
+          // Unresolvable destination — the entry is still worth listing.
+        }
+      }
+
+      flat.push({
+        title: (item.title ?? "").trim(),
+        page: page >= 0 ? page + 1 : null,
+        level,
+      });
+
+      if (Array.isArray(item.down) && item.down.length > 0) {
+        walk(item.down, level + 1);
+      }
+    }
+  };
+
+  walk(root, 0);
+  return flat;
+};
+
+/** Collapse a MuPDF quad ([ulx,uly, urx,ury, llx,lly, lrx,lry]) to its
+ * bounding box. Quads are only ever axis-aligned for horizontal text, so the
+ * bounding box is the quad itself in the common case and a safe envelope for
+ * rotated text. */
+function quadToRect(quad: number[]): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const xs = [quad[0], quad[2], quad[4], quad[6]];
+  const ys = [quad[1], quad[3], quad[5], quad[7]];
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+}
+
+methods.searchPage = (
+  docId: number,
+  pageIndex: number,
+  needle: string,
+  maxHits: number,
+): unknown[][] => {
+  const doc = documentMap.get(docId);
+  if (!doc) return [];
+  const page = doc.loadPage(pageIndex);
+  try {
+    // Each hit is an array of quads: one per line the match spans.
+    const hits = page.search(needle, maxHits);
+    return hits.map((quads) => quads.map(quadToRect));
+  } finally {
+    page.destroy();
+  }
 };
 
 methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {

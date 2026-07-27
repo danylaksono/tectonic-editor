@@ -8,13 +8,18 @@
  * - String values (both braced and quoted)
  * - Comments (@comment and %-prefixed)
  * - @string and @preamble directives
+ * - Folding, bracket matching and auto-closing brackets
  */
 import {
   StreamLanguage,
   type StringStream,
   type StreamParser,
   LanguageSupport,
+  bracketMatching,
+  foldService,
 } from "@codemirror/language";
+import { closeBrackets } from "@codemirror/autocomplete";
+import type { EditorState } from "@codemirror/state";
 import { tags } from "@lezer/highlight";
 
 interface BibState {
@@ -321,6 +326,67 @@ const bibtexParser: StreamParser<BibState> = {
 
 const bibtexLanguage = StreamLanguage.define(bibtexParser);
 
+/** Maximum characters scanned looking for an entry's closing delimiter. Real
+ * entries are far shorter; the cap stops a single unbalanced brace from making
+ * every fold-gutter repaint scan to the end of the file. */
+const MAX_ENTRY_SCAN = 20_000;
+
+/** Fold an `@type{...}` entry from the end of its opening line to its closing
+ * delimiter, so a long bibliography collapses to one line per entry.
+ *
+ * The stream parser's state is per-token and can't express a range, so this
+ * re-scans the entry text directly. */
+export function bibEntryFoldRange(
+  state: EditorState,
+  lineStart: number,
+  lineEnd: number,
+): { from: number; to: number } | null {
+  const line = state.doc.lineAt(lineStart);
+  const match = /^[ \t]*@([a-zA-Z]+)[ \t]*([{(])/.exec(line.text);
+  if (!match) return null;
+  // @comment bodies aren't entries and may contain anything at all.
+  if (match[1].toLowerCase() === "comment") return null;
+
+  const openChar = match[2];
+  const openPos = line.from + match[0].length - 1;
+  const limit = Math.min(state.doc.length, openPos + MAX_ENTRY_SCAN);
+  const body = state.doc.sliceString(openPos, limit);
+
+  const closeAt = (pos: number) =>
+    // Nothing to fold when the whole entry sits on the opening line.
+    pos <= lineEnd ? null : { from: lineEnd, to: pos };
+
+  let braceDepth = 0;
+  let inQuote = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === "\\") {
+      i++; // escaped character — never a delimiter
+      continue;
+    }
+    // Quotes delimit field values only at the entry's top level; inside a
+    // braced value they're ordinary characters.
+    if (ch === '"' && braceDepth === 1) {
+      inQuote = !inQuote;
+      continue;
+    }
+    if (inQuote) continue;
+    if (ch === "{") {
+      braceDepth++;
+    } else if (ch === "}") {
+      braceDepth--;
+      if (openChar === "{" && braceDepth === 0) return closeAt(openPos + i);
+    } else if (ch === ")" && openChar === "(" && braceDepth === 0) {
+      return closeAt(openPos + i);
+    }
+  }
+  return null;
+}
+
 export function bibtex(): LanguageSupport {
-  return new LanguageSupport(bibtexLanguage);
+  return new LanguageSupport(bibtexLanguage, [
+    foldService.of(bibEntryFoldRange),
+    bracketMatching(),
+    closeBrackets(),
+  ]);
 }

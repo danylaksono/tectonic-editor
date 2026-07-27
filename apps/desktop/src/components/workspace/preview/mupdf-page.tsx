@@ -7,7 +7,7 @@ import {
 import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
-import type { StructuredTextData, LinkData } from "@/lib/mupdf/types";
+import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
 import { MessageSquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
@@ -49,6 +49,10 @@ interface MupdfPageProps {
   reviewAnnotations?: MupdfReviewAnnotation[];
   selectedReviewAnnotationId?: string | null;
   onSelectReviewAnnotation?: (id: string) => void;
+  /** Find-bar matches falling on this page, in unscaled page coordinates. */
+  searchRects?: Rect[];
+  /** Rectangles of the currently selected match, if it is on this page. */
+  activeSearchRects?: Rect[];
 }
 
 /** Check if a canvas appears blank (GPU context was silently invalidated).
@@ -80,6 +84,8 @@ export const MupdfPage = memo(function MupdfPage({
   reviewAnnotations = [],
   selectedReviewAnnotationId,
   onSelectReviewAnnotation,
+  searchRects = [],
+  activeSearchRects = [],
 }: MupdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simplePreview = useSettingsStore((s) => s.simplePdfPreview);
@@ -337,6 +343,35 @@ export const MupdfPage = memo(function MupdfPage({
           ))}
         </div>
       )}
+
+      {/* Search matches. Drawn under the SyncTeX highlight and review layers
+          so neither is obscured while a find is open. */}
+      {searchRects.map((rect, i) => (
+        <div
+          key={`search-${i}`}
+          className="pointer-events-none absolute z-[2] rounded-[1px] bg-yellow-400/40 mix-blend-multiply dark:mix-blend-screen"
+          style={{
+            left: rect.x * scale,
+            top: rect.y * scale,
+            width: Math.max(2, rect.w * scale),
+            height: Math.max(2, rect.h * scale),
+          }}
+          aria-hidden="true"
+        />
+      ))}
+      {activeSearchRects.map((rect, i) => (
+        <div
+          key={`active-search-${i}`}
+          className="pointer-events-none absolute z-[2] rounded-[1px] bg-orange-500/50 ring-1 ring-orange-600"
+          style={{
+            left: rect.x * scale,
+            top: rect.y * scale,
+            width: Math.max(2, rect.w * scale),
+            height: Math.max(2, rect.h * scale),
+          }}
+          aria-hidden="true"
+        />
+      ))}
 
       {highlight && (
         <div

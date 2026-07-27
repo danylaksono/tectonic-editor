@@ -62,6 +62,28 @@ export interface PageSize {
   height: number;
 }
 
+/** An entry from the PDF's own bookmark tree (what hyperref writes), flattened
+ * to a list with an explicit nesting level. This is the *compiled* structure,
+ * with real page numbers — distinct from the outline parsed out of the LaTeX
+ * source. */
+export interface PdfOutlineItem {
+  title: string;
+  /** 1-based page, or null when the destination can't be resolved. */
+  page: number | null;
+  /** 0 for top-level entries. */
+  level: number;
+}
+
+/** One search match on one page, in unscaled PDF page coordinates.
+ *
+ * A match that wraps across lines or columns covers more than one rectangle,
+ * so `rects` is the whole match rather than one box per match. */
+export interface PdfSearchMatch {
+  /** 1-based, matching the rest of the viewer's page numbering. */
+  page: number;
+  rects: Rect[];
+}
+
 export type WorkerRequest = [string, number, unknown[]];
 export type WorkerResponse =
   | ["RESULT", number, unknown]

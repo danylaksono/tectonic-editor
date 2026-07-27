@@ -21,6 +21,7 @@ import {
   CheckIcon,
   SparklesIcon,
   GaugeIcon,
+  SearchIcon,
 } from "lucide-react";
 import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
@@ -376,6 +377,7 @@ export function PdfPreview() {
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
   const scrollToPageRef = useRef<((page: number) => void) | null>(null);
+  const openPdfSearchRef = useRef<(() => void) | null>(null);
   const [scale, setScale] = useState<number>(1.0);
   const [captureMode, setCaptureMode] = useState(false);
   const [synctexHighlight, setSynctexHighlight] =
@@ -1072,7 +1074,9 @@ export function PdfPreview() {
       return;
     }
 
-    setSynctexHighlight(locationRequest);
+    if (locationRequest.highlight !== false) {
+      setSynctexHighlight(locationRequest);
+    }
     requestAnimationFrame(() => goToPage(locationRequest.page));
     const timer = window.setTimeout(() => {
       setSynctexHighlight(null);
@@ -1419,6 +1423,7 @@ export function PdfPreview() {
                     isActive ? handleCurrentPageChange : undefined
                   }
                   scrollToPageRef={isActive ? scrollToPageRef : undefined}
+                  openSearchRef={isActive ? openPdfSearchRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}
                   onCancelCapture={
@@ -1828,6 +1833,15 @@ export function PdfPreview() {
                 </SelectContent>
               </Select>
               <div className="mx-1 h-4 w-px bg-border" />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7"
+                onClick={() => openPdfSearchRef.current?.()}
+                title="Find in PDF (Ctrl+F)"
+              >
+                <SearchIcon className="size-3.5" />
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"

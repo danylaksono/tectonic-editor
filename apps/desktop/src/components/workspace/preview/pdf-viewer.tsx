@@ -1,5 +1,7 @@
-import { useCallback, useRef, useEffect, useState } from "react";
+import { useCallback, useMemo, useRef, useEffect, useState } from "react";
 import {
+  ChevronDownIcon,
+  ChevronUpIcon,
   CopyIcon,
   CrosshairIcon,
   ExternalLinkIcon,
@@ -7,6 +9,8 @@ import {
   LinkIcon,
   LoaderIcon,
   MessageSquarePlusIcon,
+  SearchIcon,
+  XIcon,
 } from "lucide-react";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -22,7 +26,9 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
 import { scrollBehavior } from "@/lib/utils";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
-import type { PageSize } from "@/lib/mupdf/types";
+import type { PageSize, PdfSearchMatch, Rect } from "@/lib/mupdf/types";
+import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { firstMatchFromPage, searchPdfPages } from "@/lib/mupdf/pdf-search";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -125,6 +131,9 @@ interface PdfViewerProps {
   onPlaceHighlight?: (target: PdfReviewTarget) => void;
   /** Colour token for the highlight drag preview. */
   highlightColor?: string;
+  /** Lets the toolbar open the find bar, mirroring the Ctrl/Cmd+F binding the
+   *  viewer handles when the PDF pane has focus. */
+  openSearchRef?: React.RefObject<(() => void) | null>;
 }
 
 export function PdfViewer({
@@ -156,6 +165,7 @@ export function PdfViewer({
   highlightPlacementMode = false,
   onPlaceHighlight,
   highlightColor,
+  openSearchRef,
 }: PdfViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -169,6 +179,17 @@ export function PdfViewer({
   );
   const docIdRef = useRef(0);
   const loadGenRef = useRef(0);
+
+  // Find bar
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchMatches, setSearchMatches] = useState<PdfSearchMatch[]>([]);
+  const [activeMatch, setActiveMatch] = useState(-1);
+  const [searching, setSearching] = useState(false);
+  const [searchTruncated, setSearchTruncated] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  /** Bumped on every new query so an in-flight page sweep abandons itself. */
+  const searchGenRef = useRef(0);
 
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
@@ -688,6 +709,160 @@ export function PdfViewer({
     return () => cancelAnimationFrame(frame);
   }, [highlightLocation, isActive, pageSizes]);
 
+  // ── Find bar ──────────────────────────────────────────────────────────────
+
+  // Read inside effects and callbacks that must not re-subscribe every time a
+  // page of results streams in.
+  const searchMatchesRef = useRef<PdfSearchMatch[]>([]);
+  searchMatchesRef.current = searchMatches;
+
+  const activeMatchData =
+    activeMatch >= 0 ? searchMatches[activeMatch] : undefined;
+
+  /** page number → every match rectangle on that page. */
+  const searchRectsByPage = useMemo(() => {
+    const byPage = new Map<number, Rect[]>();
+    for (const match of searchMatches) {
+      const existing = byPage.get(match.page);
+      if (existing) existing.push(...match.rects);
+      else byPage.set(match.page, [...match.rects]);
+    }
+    return byPage;
+  }, [searchMatches]);
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    // The input mounts with the bar, so focus on the next frame.
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    // Abandon any sweep still walking pages in the worker.
+    searchGenRef.current++;
+    setSearchOpen(false);
+    setSearchMatches([]);
+    setActiveMatch(-1);
+    setSearching(false);
+    setSearchTruncated(false);
+    containerRef.current?.focus();
+  }, []);
+
+  const stepMatch = useCallback((delta: number) => {
+    const total = searchMatchesRef.current.length;
+    if (total === 0) return;
+    setActiveMatch((current) =>
+      current < 0 ? 0 : (current + delta + total) % total,
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!openSearchRef) return;
+    openSearchRef.current = openSearch;
+    return () => {
+      if (openSearchRef) openSearchRef.current = null;
+    };
+  }, [openSearchRef, openSearch]);
+
+  // Sweep the document for the current query. Debounced: without it every
+  // keystroke starts a full-document sweep, and each page costs a structured
+  // text extraction in the worker.
+  useEffect(() => {
+    const gen = ++searchGenRef.current;
+    const needle = searchQuery.trim();
+
+    if (!searchOpen || !needle || numPages === 0 || docIdRef.current <= 0) {
+      setSearchMatches([]);
+      setActiveMatch(-1);
+      setSearching(false);
+      setSearchTruncated(false);
+      return;
+    }
+
+    setSearching(true);
+    setSearchTruncated(false);
+    const startPage = getVisiblePage();
+
+    const timer = setTimeout(() => {
+      const docId = docIdRef.current;
+      const client = getMupdfClient();
+      const isStale = () => searchGenRef.current !== gen;
+
+      searchPdfPages(
+        (pageIndex, text, maxHits) =>
+          client.searchPage(docId, pageIndex, text, maxHits),
+        numPages,
+        needle,
+        {
+          isCancelled: isStale,
+          onPartial: (matches) => {
+            if (isStale()) return;
+            setSearchMatches(matches);
+            // Select a match as soon as one exists so next/previous work while
+            // the rest of the document is still being swept.
+            setActiveMatch((current) =>
+              current === -1 && matches.length > 0
+                ? firstMatchFromPage(matches, startPage)
+                : current,
+            );
+          },
+        },
+      )
+        .then((result) => {
+          if (isStale()) return;
+          setSearchMatches(result.matches);
+          setSearchTruncated(result.truncated);
+          setActiveMatch((current) =>
+            current === -1 && result.matches.length > 0
+              ? firstMatchFromPage(result.matches, startPage)
+              : current,
+          );
+          setSearching(false);
+        })
+        .catch((error: unknown) => {
+          if (isStale()) return;
+          log.error("PDF search failed", { message: String(error) });
+          setSearching(false);
+        });
+    }, 250);
+
+    return () => clearTimeout(timer);
+    // pageSizes changes identity on reload, which re-runs the search against
+    // the recompiled document.
+  }, [searchQuery, searchOpen, numPages, pageSizes]);
+
+  // Centre the active match. Deliberately keyed off the active index rather
+  // than the match array, so results streaming in mid-sweep don't yank the
+  // viewport away from the user.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !searchOpen || activeMatch < 0) return;
+    const match = searchMatchesRef.current[activeMatch];
+    if (!match) return;
+
+    const frame = requestAnimationFrame(() => {
+      const pageEl = container.querySelector(
+        `[data-page-number="${match.page}"]`,
+      ) as HTMLElement | null;
+      if (!pageEl) {
+        scrollToPage(container, match.page);
+        return;
+      }
+      const matchTop = Math.min(...match.rects.map((rect) => rect.y));
+      const targetTop =
+        pageEl.offsetTop +
+        matchTop * scaleRef.current -
+        container.clientHeight / 2;
+      container.scrollTo({
+        top: Math.max(0, targetTop),
+        behavior: scrollBehavior(),
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeMatch, searchOpen, searchQuery]);
+
   // Dismiss selection toolbar on scroll
   useEffect(() => {
     const container = containerRef.current;
@@ -1022,140 +1197,236 @@ export function PdfViewer({
     });
   }, []);
 
+  const handleContainerKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "f"
+      ) {
+        event.preventDefault();
+        openSearch();
+        return;
+      }
+      if (event.key === "Escape" && searchOpen) {
+        event.preventDefault();
+        closeSearch();
+      }
+    },
+    [openSearch, closeSearch, searchOpen],
+  );
+
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild disabled={captureMode}>
-        <div
-          ref={containerRef}
-          tabIndex={-1}
-          {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
-          className={`pdf-scroll-area min-h-0 flex-1 overflow-auto outline-none ${
-            simplePreview ? "pdf-simple" : ""
-          }`}
-          style={{
-            cursor: dragMode || commentPlacementMode ? "crosshair" : undefined,
-            // Drag modes draw a box — suppress incidental text selection.
-            userSelect: dragMode ? "none" : undefined,
-          }}
-          onContextMenu={handleContextMenu}
-          onMouseDownCapture={() => containerRef.current?.focus()}
-          onMouseDown={handleCaptureMouseDown}
-          onMouseMove={handleCaptureMouseMove}
-          onMouseUp={handleCaptureMouseUp}
-        >
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <ContextMenu>
+        <ContextMenuTrigger asChild disabled={captureMode}>
           <div
-            ref={contentRef}
-            className="pdf-paper-stack flex min-w-fit flex-col items-center gap-7 p-7"
-            onClick={handleTextLayerClick}
+            ref={containerRef}
+            tabIndex={-1}
+            {...{ [LOCAL_ZOOM_SHORTCUTS_ATTR]: "true" }}
+            className={`pdf-scroll-area min-h-0 flex-1 overflow-auto outline-none ${
+              simplePreview ? "pdf-simple" : ""
+            }`}
+            onKeyDown={handleContainerKeyDown}
+            style={{
+              cursor:
+                dragMode || commentPlacementMode ? "crosshair" : undefined,
+              // Drag modes draw a box — suppress incidental text selection.
+              userSelect: dragMode ? "none" : undefined,
+            }}
+            onContextMenu={handleContextMenu}
+            onMouseDownCapture={() => containerRef.current?.focus()}
+            onMouseDown={handleCaptureMouseDown}
+            onMouseMove={handleCaptureMouseMove}
+            onMouseUp={handleCaptureMouseUp}
           >
-            {loading && numPages === 0 && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <LoaderIcon className="size-4 animate-spin" />
-                Loading PDF...
-              </div>
-            )}
-            {pageSizes.map((size, i) => (
-              <MupdfPage
-                key={i}
-                docId={docIdRef.current}
-                pageIndex={i}
-                scale={scale}
-                pageWidth={size.width}
-                pageHeight={size.height}
-                isVisible={visiblePages.has(i + 1)}
-                fastScroll={fastScroll}
-                highlight={
-                  highlightLocation?.page === i + 1 ? highlightLocation : null
-                }
-                reviewAnnotations={reviewAnnotations.filter(
-                  (annotation) => annotation.page === i + 1,
-                )}
-                selectedReviewAnnotationId={selectedReviewAnnotationId}
-                onSelectReviewAnnotation={onSelectReviewAnnotation}
-              />
-            ))}
-          </div>
-          {selRect && (
             <div
-              className={
-                dragMode === "highlight"
-                  ? `pointer-events-none fixed rounded-sm ring-1 ${resolveReviewHighlightColor(highlightColor).preview}`
-                  : "pointer-events-none fixed border-2 border-primary bg-primary/10"
-              }
-              style={selRect}
-            />
-          )}
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent className="min-w-56">
-        <ContextMenuItem
-          disabled={!onSynctexClick || !contextTarget?.page}
-          onSelect={() => {
-            if (!contextTarget?.page) return;
-            onSynctexClick?.(
-              contextTarget.page,
-              contextTarget.x,
-              contextTarget.y,
-            );
-          }}
-        >
-          <FileTextIcon />
-          Go to source location
-        </ContextMenuItem>
-        {onAddReviewComment && (
+              ref={contentRef}
+              className="pdf-paper-stack flex min-w-fit flex-col items-center gap-7 p-7"
+              onClick={handleTextLayerClick}
+            >
+              {loading && numPages === 0 && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <LoaderIcon className="size-4 animate-spin" />
+                  Loading PDF...
+                </div>
+              )}
+              {pageSizes.map((size, i) => (
+                <MupdfPage
+                  key={i}
+                  docId={docIdRef.current}
+                  pageIndex={i}
+                  scale={scale}
+                  pageWidth={size.width}
+                  pageHeight={size.height}
+                  isVisible={visiblePages.has(i + 1)}
+                  fastScroll={fastScroll}
+                  highlight={
+                    highlightLocation?.page === i + 1 ? highlightLocation : null
+                  }
+                  reviewAnnotations={reviewAnnotations.filter(
+                    (annotation) => annotation.page === i + 1,
+                  )}
+                  selectedReviewAnnotationId={selectedReviewAnnotationId}
+                  onSelectReviewAnnotation={onSelectReviewAnnotation}
+                  searchRects={
+                    searchOpen ? searchRectsByPage.get(i + 1) : undefined
+                  }
+                  activeSearchRects={
+                    searchOpen && activeMatchData?.page === i + 1
+                      ? activeMatchData.rects
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+            {selRect && (
+              <div
+                className={
+                  dragMode === "highlight"
+                    ? `pointer-events-none fixed rounded-sm ring-1 ${resolveReviewHighlightColor(highlightColor).preview}`
+                    : "pointer-events-none fixed border-2 border-primary bg-primary/10"
+                }
+                style={selRect}
+              />
+            )}
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="min-w-56">
           <ContextMenuItem
-            disabled={!contextTarget?.page}
+            disabled={!onSynctexClick || !contextTarget?.page}
             onSelect={() => {
-              if (contextTarget?.page) {
-                onAddReviewComment(contextTarget.reviewTarget);
+              if (!contextTarget?.page) return;
+              onSynctexClick?.(
+                contextTarget.page,
+                contextTarget.x,
+                contextTarget.y,
+              );
+            }}
+          >
+            <FileTextIcon />
+            Go to source location
+          </ContextMenuItem>
+          {onAddReviewComment && (
+            <ContextMenuItem
+              disabled={!contextTarget?.page}
+              onSelect={() => {
+                if (contextTarget?.page) {
+                  onAddReviewComment(contextTarget.reviewTarget);
+                }
+              }}
+            >
+              <MessageSquarePlusIcon />
+              Add review comment
+            </ContextMenuItem>
+          )}
+          {contextTarget?.href && (
+            <>
+              <ContextMenuItem
+                onSelect={() => openPdfHref(contextTarget.href!)}
+              >
+                <ExternalLinkIcon />
+                Open link
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() =>
+                  void navigator.clipboard.writeText(contextTarget.href!)
+                }
+              >
+                <LinkIcon />
+                Copy link
+              </ContextMenuItem>
+            </>
+          )}
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            disabled={!contextTarget?.selectedText}
+            onSelect={() => {
+              if (contextTarget?.selectedText) {
+                void navigator.clipboard.writeText(contextTarget.selectedText);
               }
             }}
           >
-            <MessageSquarePlusIcon />
-            Add review comment
+            <CopyIcon />
+            Copy selected text
           </ContextMenuItem>
-        )}
-        {contextTarget?.href && (
-          <>
-            <ContextMenuItem onSelect={() => openPdfHref(contextTarget.href!)}>
-              <ExternalLinkIcon />
-              Open link
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() =>
-                void navigator.clipboard.writeText(contextTarget.href!)
+          {onStartCapture && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem onSelect={onStartCapture}>
+                <CrosshairIcon />
+                Capture &amp; Ask
+                <ContextMenuShortcut>
+                  {navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"}
+                </ContextMenuShortcut>
+              </ContextMenuItem>
+            </>
+          )}
+        </ContextMenuContent>
+      </ContextMenu>
+
+      {searchOpen && (
+        <div className="absolute top-2 right-4 z-20 flex items-center gap-1 rounded-md border border-border bg-popover/95 p-1 shadow-md backdrop-blur">
+          <SearchIcon className="ml-1 size-3.5 shrink-0 text-muted-foreground" />
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                stepMatch(event.shiftKey ? -1 : 1);
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                closeSearch();
               }
-            >
-              <LinkIcon />
-              Copy link
-            </ContextMenuItem>
-          </>
-        )}
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          disabled={!contextTarget?.selectedText}
-          onSelect={() => {
-            if (contextTarget?.selectedText) {
-              void navigator.clipboard.writeText(contextTarget.selectedText);
-            }
-          }}
-        >
-          <CopyIcon />
-          Copy selected text
-        </ContextMenuItem>
-        {onStartCapture && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={onStartCapture}>
-              <CrosshairIcon />
-              Capture &amp; Ask
-              <ContextMenuShortcut>
-                {navigator.userAgent.includes("Mac") ? "⌘X" : "Ctrl+X"}
-              </ContextMenuShortcut>
-            </ContextMenuItem>
-          </>
-        )}
-      </ContextMenuContent>
-    </ContextMenu>
+            }}
+            placeholder="Find in document"
+            aria-label="Find in document"
+            className="h-6 w-44 bg-transparent px-1 text-foreground text-xs outline-none placeholder:text-muted-foreground"
+          />
+          <span className="min-w-16 shrink-0 text-center text-[11px] text-muted-foreground tabular-nums">
+            {searchQuery.trim() === ""
+              ? ""
+              : searching && searchMatches.length === 0
+                ? "Searching…"
+                : searchMatches.length === 0
+                  ? "No results"
+                  : `${Math.max(1, activeMatch + 1)} of ${
+                      searchMatches.length
+                    }${searchTruncated ? "+" : ""}`}
+          </span>
+          <button
+            type="button"
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+            disabled={searchMatches.length === 0}
+            onClick={() => stepMatch(-1)}
+            title="Previous match (Shift+Enter)"
+            aria-label="Previous match"
+          >
+            <ChevronUpIcon className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+            disabled={searchMatches.length === 0}
+            onClick={() => stepMatch(1)}
+            title="Next match (Enter)"
+            aria-label="Next match"
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={closeSearch}
+            title="Close find bar (Esc)"
+            aria-label="Close find bar"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

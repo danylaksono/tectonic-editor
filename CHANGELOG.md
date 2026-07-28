@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- Citation cards in the PDF. Clicking a citation shows the reference it points
+  at — title, authors, year, and venue — with a **DOI** link that opens the
+  published record in a browser, and **Go to reference** for the jump to the
+  bibliography that clicking a citation used to perform. The card stays up
+  until you click elsewhere or press `Esc`. Keys with no matching entry are
+  named as such, which makes a stale citation visible while reading or
+  reviewing. Requires the `hyperref` package, which links citations in the
+  compiled PDF. References are read from the project's `.bib` files, or from a
+  `thebibliography` environment when the document has no `.bib` file.
+- Back and forward navigation in the PDF pane (`Alt` + `Left` / `Right`, or the
+  arrows on the PDF toolbar), which return you to where a jump started. Reading
+  position is restored, not just the page. Following a citation to the
+  bibliography, opening an outline entry, and typing a page number are all
+  undoable this way; stepping page by page is not, since that is closer to
+  scrolling.
+
 ## [1.4.6] - 2026-07-28
 
 Opal 1.4.6 makes the compiled PDF a first-class thing to read and search, and

@@ -258,9 +258,21 @@ methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {
     const uri: string = link.getURI() || "";
     const isExternal: boolean = link.isExternal?.() ?? uri.startsWith("http");
     let href: string;
+    // MuPDF keeps hyperref's destination name in the URI (`#nameddest=cite.key`)
+    // but resolving it below collapses it to a page number, so capture the name
+    // first — it is what identifies which citation or float a link points at.
+    let dest: string | null = null;
     if (isExternal) {
       href = uri;
     } else {
+      const named = uri.match(/^#nameddest=([^&]+)/);
+      if (named) {
+        try {
+          dest = decodeURIComponent(named[1]);
+        } catch {
+          dest = named[1];
+        }
+      }
       try {
         const resolved = doc.resolveLink(uri) as any;
         if (typeof resolved === "number") {
@@ -281,6 +293,7 @@ methods.getPageLinks = (docId: number, pageIndex: number): unknown[] => {
       h: bounds[3] - bounds[1],
       href,
       isExternal,
+      dest,
     };
   });
   for (const link of links) link.destroy?.();

@@ -14,6 +14,8 @@ import {
   CrosshairIcon,
   ChevronUpIcon,
   ChevronDownIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   Minimize2Icon,
@@ -89,6 +91,8 @@ import {
   type PdfReviewTarget,
   type PdfTextSelection,
   type CaptureResult,
+  type PdfViewHistoryControls,
+  type PdfViewHistoryState,
 } from "./pdf-viewer";
 import { resolveTexRoot } from "@/stores/document-store";
 import { createLogger } from "@/lib/debug/logger";
@@ -378,8 +382,15 @@ export function PdfPreview() {
   const addReviewReply = useReviewStore((state) => state.addReply);
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
-  const scrollToPageRef = useRef<((page: number) => void) | null>(null);
+  const scrollToPageRef = useRef<
+    ((page: number, options?: { record?: boolean }) => void) | null
+  >(null);
   const openPdfSearchRef = useRef<(() => void) | null>(null);
+  const viewHistoryRef = useRef<PdfViewHistoryControls | null>(null);
+  const [viewHistory, setViewHistory] = useState<PdfViewHistoryState>({
+    canGoBack: false,
+    canGoForward: false,
+  });
   const [scale, setScale] = useState<number>(1.0);
   const [captureMode, setCaptureMode] = useState(false);
   const [synctexHighlight, setSynctexHighlight] =
@@ -1073,10 +1084,13 @@ export function PdfPreview() {
     [isEditingPage, setStatusCurrentPage],
   );
 
+  /** `record` marks a jump the back button should undo — a page entered by
+   *  number, or a location opened from elsewhere in the app. Stepping page by
+   *  page is closer to scrolling and is left out of the history. */
   const goToPage = useCallback(
-    (page: number) => {
+    (page: number, options?: { record?: boolean }) => {
       const clamped = Math.max(1, Math.min(numPages, page));
-      scrollToPageRef.current?.(clamped);
+      scrollToPageRef.current?.(clamped, options);
     },
     [numPages],
   );
@@ -1089,7 +1103,9 @@ export function PdfPreview() {
     if (locationRequest.highlight !== false) {
       setSynctexHighlight(locationRequest);
     }
-    requestAnimationFrame(() => goToPage(locationRequest.page));
+    requestAnimationFrame(() =>
+      goToPage(locationRequest.page, { record: true }),
+    );
     const timer = window.setTimeout(() => {
       setSynctexHighlight(null);
       clearLocationRequest();
@@ -1101,7 +1117,7 @@ export function PdfPreview() {
     setIsEditingPage(false);
     const parsed = parseInt(pageInputValue, 10);
     if (!Number.isNaN(parsed) && parsed >= 1 && parsed <= numPages) {
-      goToPage(parsed);
+      goToPage(parsed, { record: true });
     } else {
       setPageInputValue(String(currentPage));
     }
@@ -1435,6 +1451,8 @@ export function PdfPreview() {
                     isActive ? handleCurrentPageChange : undefined
                   }
                   scrollToPageRef={isActive ? scrollToPageRef : undefined}
+                  viewHistoryRef={isActive ? viewHistoryRef : undefined}
+                  onViewHistoryChange={isActive ? setViewHistory : undefined}
                   openSearchRef={isActive ? openPdfSearchRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}
@@ -1743,6 +1761,27 @@ export function PdfPreview() {
           )}
           {pdfData && (
             <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0"
+                onClick={() => viewHistoryRef.current?.back()}
+                disabled={!viewHistory.canGoBack}
+                title="Back (Alt+Left)"
+              >
+                <ArrowLeftIcon className="size-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0"
+                onClick={() => viewHistoryRef.current?.forward()}
+                disabled={!viewHistory.canGoForward}
+                title="Forward (Alt+Right)"
+              >
+                <ArrowRightIcon className="size-3.5" />
+              </Button>
+              <div className="mx-1 h-4 w-px bg-border" />
               <Button
                 variant="ghost"
                 size="icon"

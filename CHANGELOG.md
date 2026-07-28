@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-07-28
+
+Opal 1.4.6 makes the compiled PDF a first-class thing to read and search, and
+repairs PDF text extraction, which had been returning nothing.
+
 ### Added
 
 - Find in the PDF (`Ctrl`/`Cmd` + `F` with the PDF pane focused, or the search
@@ -46,6 +51,10 @@
   selecting text, **Copy selected text**, and **Capture & Ask** all returned
   nothing. Text lines are also positioned on their true baseline now instead
   of a descender height too low.
+- Fixed `\today` and other date commands rendering as 1 January 1970. Tectonic
+  defaults its session clock to the Unix epoch when no build date is supplied,
+  so compiles now pass the current time (or `SOURCE_DATE_EPOCH` when it is set
+  to a valid timestamp, keeping reproducible builds reproducible).
 
 ## [1.4.2] - 2026-07-23
 

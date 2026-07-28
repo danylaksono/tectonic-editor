@@ -5711,7 +5711,7 @@ dependencies = [
 
 [[package]]
 name = "tectonic-editor-desktop"
-version = "1.4.2"
+version = "1.4.6"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

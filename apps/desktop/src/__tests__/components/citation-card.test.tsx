@@ -15,6 +15,8 @@ const entry = {
   journal: "Journal of Examples",
   doi: "10.1234/example",
   filePath: "references.bib",
+  fileId: "references.bib",
+  from: 0,
 };
 
 afterEach(() => {
@@ -40,15 +42,17 @@ describe("CitationCard", () => {
     expect(screen.getByText("smith2024")).toBeTruthy();
   });
 
-  it("offers both the DOI and the jump to the bibliography", async () => {
+  it("offers the DOI, the jump to the bibliography, and the entry's source", async () => {
     const onOpenLink = vi.fn();
     const onGoToReference = vi.fn();
+    const onEditEntry = vi.fn();
 
     render(
       <CitationCard
         preview={buildCitationPreview("smith2024", entry)}
         anchorRect={anchorRect}
         onGoToReference={onGoToReference}
+        onEditEntry={onEditEntry}
         onOpenLink={onOpenLink}
       />,
     );
@@ -60,6 +64,12 @@ describe("CitationCard", () => {
       screen.getByRole("button", { name: /Go to reference/ }),
     );
     expect(onGoToReference).toHaveBeenCalled();
+
+    const edit = screen.getByRole("button", { name: /Edit entry/ });
+    // The file it opens is named, since a project can have several .bib files.
+    expect(edit.getAttribute("title")).toBe("Open references.bib");
+    await userEvent.click(edit);
+    expect(onEditEntry).toHaveBeenCalled();
   });
 
   it("omits the jump when the citation has no resolvable destination", () => {

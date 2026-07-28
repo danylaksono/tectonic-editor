@@ -1,6 +1,10 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CornerDownRightIcon, ExternalLinkIcon } from "lucide-react";
+import {
+  CornerDownRightIcon,
+  ExternalLinkIcon,
+  PencilIcon,
+} from "lucide-react";
 import {
   citationVenue,
   type CitationPreview,
@@ -26,6 +30,9 @@ interface CitationCardProps {
   /** Jump to the bibliography entry in the PDF; absent when the citation's
    * destination could not be resolved to a page. */
   onGoToReference?: () => void;
+  /** Open the entry's source in the editor; absent when the key is not in the
+   * project's bibliography. */
+  onEditEntry?: () => void;
   onOpenLink: (url: string) => void;
 }
 
@@ -33,6 +40,7 @@ export function CitationCard({
   preview,
   anchorRect,
   onGoToReference,
+  onEditEntry,
   onOpenLink,
 }: CitationCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
@@ -108,7 +116,7 @@ export function CitationCard({
         </div>
       )}
 
-      {(onGoToReference || preview.link) && (
+      {(onGoToReference || onEditEntry || preview.link) && (
         <div className="mt-2.5 flex items-center gap-3 border-t pt-2">
           {onGoToReference && (
             <button
@@ -118,6 +126,17 @@ export function CitationCard({
             >
               <CornerDownRightIcon className="size-3" />
               Go to reference
+            </button>
+          )}
+          {onEditEntry && (
+            <button
+              type="button"
+              onClick={onEditEntry}
+              title={`Open ${entry?.filePath ?? "the bibliography"}`}
+              className="flex items-center gap-1 rounded text-muted-foreground text-xs hover:text-foreground"
+            >
+              <PencilIcon className="size-3" />
+              Edit entry
             </button>
           )}
           {preview.link && (

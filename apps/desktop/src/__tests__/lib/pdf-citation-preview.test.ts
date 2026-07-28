@@ -114,6 +114,19 @@ describe("buildCitationIndex", () => {
     expect(index.get("legacy1999")?.type).toBe("bibitem");
   });
 
+  it("locates each entry in its file, so the editor can open it", () => {
+    const smith = index.get("smith2024")!;
+    expect(smith.fileId).toBe("references.bib");
+    expect(files[0].content!.slice(smith.from)).toMatch(/^@article\{smith2024/);
+
+    // A bibitem is located at the command itself, not at its body.
+    const legacy = index.get("legacy1999")!;
+    expect(legacy.fileId).toBe("main.tex");
+    expect(files[1].content!.slice(legacy.from)).toMatch(
+      /^\\bibitem\[Legacy 1999\]\{legacy1999\}/,
+    );
+  });
+
   it("renders a bibitem body as the reference text a reader sees", () => {
     expect(index.get("mcmahan2017communication")?.title).toBe(
       'B. McMahan, E. Moore, and B. Aguera y Arcas, "Communication-efficient ' +

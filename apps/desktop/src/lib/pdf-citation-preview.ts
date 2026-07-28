@@ -1,10 +1,18 @@
-import { parseBibEntries, type BibCitation } from "@/lib/bibtex";
+import { parseBibtexSourceEntries, type BibCitation } from "@/lib/bibtex";
 import type { ProjectFile } from "@/stores/document-store";
+
+/** A bibliography entry, located precisely enough to open it in the editor. */
+export interface CitationEntry extends BibCitation {
+  /** Project file the entry is written in. */
+  fileId: string;
+  /** Character offset of the entry within that file. */
+  from: number;
+}
 
 /** A bibliography entry resolved from a citation link in the compiled PDF. */
 export interface CitationPreview {
   key: string;
-  entry: BibCitation | null;
+  entry: CitationEntry | null;
   /** Absolute https URL for the entry's DOI or url field, when it has one. */
   link: string | null;
   /** Where `link` came from, so the card can label it. */
@@ -48,7 +56,7 @@ function entryUrl(url: string | undefined): string | null {
 
 export function buildCitationPreview(
   key: string,
-  entry: BibCitation | null,
+  entry: CitationEntry | null,
 ): CitationPreview {
   const doi = doiUrl(entry?.doi);
   if (doi) return { key, entry, link: doi, linkKind: "doi" };
@@ -100,8 +108,9 @@ function bibItemLink(body: string): { doi?: string; url?: string } {
 
 /** Entries from a `thebibliography` environment written directly in the
  * source, which many templates use instead of a `.bib` file. */
-function parseBibItemEntries(content: string, filePath: string): BibCitation[] {
-  const entries: BibCitation[] = [];
+function parseBibItemEntries(file: ProjectFile): CitationEntry[] {
+  const content = file.content ?? "";
+  const entries: CitationEntry[] = [];
   const pattern = /\\bibitem(?:\[[^\]]*\])?\s*\{([^}]+)\}/g;
 
   for (const match of content.matchAll(pattern)) {
@@ -117,7 +126,9 @@ function parseBibItemEntries(content: string, filePath: string): BibCitation[] {
       type: "bibitem",
       title: bibItemText(body) || key,
       ...bibItemLink(body),
-      filePath,
+      filePath: file.relativePath,
+      fileId: file.id,
+      from: match.index,
     });
   }
 
@@ -132,16 +143,18 @@ function parseBibItemEntries(content: string, filePath: string): BibCitation[] {
  */
 export function buildCitationIndex(
   files: ProjectFile[],
-): Map<string, BibCitation> {
-  const index = new Map<string, BibCitation>();
+): Map<string, CitationEntry> {
+  const index = new Map<string, CitationEntry>();
 
   for (const file of files) {
     if (!file.content) continue;
     const name = file.name.toLowerCase();
-    const entries = name.endsWith(".bib")
-      ? parseBibEntries(file.content, file.relativePath)
+    const entries: CitationEntry[] = name.endsWith(".bib")
+      ? parseBibtexSourceEntries(file.content, file.relativePath).map(
+          (entry) => ({ ...entry, fileId: file.id, from: entry.from }),
+        )
       : name.endsWith(".tex")
-        ? parseBibItemEntries(file.content, file.relativePath)
+        ? parseBibItemEntries(file)
         : [];
     for (const entry of entries) {
       // First definition wins, matching how BibTeX resolves a duplicated key.

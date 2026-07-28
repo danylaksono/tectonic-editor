@@ -6,8 +6,9 @@
 
 - Citation cards in the PDF. Clicking a citation shows the reference it points
   at — title, authors, year, and venue — with a **DOI** link that opens the
-  published record in a browser, and **Go to reference** for the jump to the
-  bibliography that clicking a citation used to perform. The card stays up
+  published record in a browser, **Go to reference** for the jump to the
+  bibliography that clicking a citation used to perform, and **Edit entry** to
+  open the entry's own `.bib` source in the editor. The card stays up
   until you click elsewhere or press `Esc`. Keys with no matching entry are
   named as such, which makes a stale citation visible while reading or
   reviewing. Requires the `hyperref` package, which links citations in the

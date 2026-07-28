@@ -141,6 +141,8 @@ interface PdfViewerProps {
   /** Browser-style back/forward through jump positions. */
   viewHistoryRef?: React.RefObject<PdfViewHistoryControls | null>;
   onViewHistoryChange?: (state: PdfViewHistoryState) => void;
+  /** Open a bibliography entry's source in the editor, from a citation card. */
+  onOpenBibEntry?: (fileId: string, from: number) => void;
   captureMode?: boolean;
   onCapture?: (result: CaptureResult) => void;
   onCancelCapture?: () => void;
@@ -183,6 +185,7 @@ export function PdfViewer({
   scrollToPageRef,
   viewHistoryRef,
   onViewHistoryChange,
+  onOpenBibEntry,
   captureMode = false,
   onCapture,
   onCancelCapture,
@@ -1536,6 +1539,15 @@ export function PdfViewer({
                   const href = citationPopup.open?.href;
                   citationPopup.close();
                   if (href) openPdfHref(href);
+                }
+              : undefined
+          }
+          onEditEntry={
+            onOpenBibEntry && citationPopup.open.preview.entry
+              ? () => {
+                  const entry = citationPopup.open?.preview.entry;
+                  citationPopup.close();
+                  if (entry) onOpenBibEntry(entry.fileId, entry.from);
                 }
               : undefined
           }

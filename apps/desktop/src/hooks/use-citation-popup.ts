@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   buildCitationIndex,
   buildCitationPreview,
+  type CitationEntry,
   type CitationPreview,
 } from "@/lib/pdf-citation-preview";
 import type { CitationAnchorRect } from "@/components/workspace/preview/citation-card";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
-import type { BibCitation } from "@/lib/bibtex";
 
 export interface OpenCitation {
   preview: CitationPreview;
@@ -40,7 +40,7 @@ export function useCitationPopup(
   const anchorRef = useRef<HTMLElement | null>(null);
   const indexRef = useRef<{
     files: ProjectFile[];
-    entries: Map<string, BibCitation>;
+    entries: Map<string, CitationEntry>;
   } | null>(null);
 
   const close = useCallback(() => {

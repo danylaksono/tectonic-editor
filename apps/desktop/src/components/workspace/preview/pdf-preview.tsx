@@ -769,6 +769,24 @@ export function PdfPreview() {
     if (resolvedSource) navigateToSourceLocation(resolvedSource);
   }, [resolvedSource, navigateToSourceLocation]);
 
+  /** Open a bibliography entry in the editor, from a citation card in the PDF.
+   *  Reader mode hides the editor, so it has to give way first. */
+  const openBibEntry = useCallback(
+    (fileId: string, from: number) => {
+      const needsSwitch = useDocumentStore.getState().activeFileId !== fileId;
+      const leavingReader = readerMode;
+      if (leavingReader) setReaderMode(false);
+      if (needsSwitch) setActiveFile(fileId);
+
+      if (needsSwitch || leavingReader) {
+        setTimeout(() => requestJumpToPosition(from), 100);
+      } else {
+        requestJumpToPosition(from);
+      }
+    },
+    [readerMode, setReaderMode, setActiveFile, requestJumpToPosition],
+  );
+
   const buildPdfContext = useCallback(
     (text: string) => {
       const locationNote = resolvedSource
@@ -1453,6 +1471,7 @@ export function PdfPreview() {
                   scrollToPageRef={isActive ? scrollToPageRef : undefined}
                   viewHistoryRef={isActive ? viewHistoryRef : undefined}
                   onViewHistoryChange={isActive ? setViewHistory : undefined}
+                  onOpenBibEntry={isActive ? openBibEntry : undefined}
                   openSearchRef={isActive ? openPdfSearchRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}

@@ -288,6 +288,10 @@ function CompileErrorDetails({
   );
 }
 
+/** Stable empty list for inactive keep-alive viewers — an inline [] would
+ * change identity every render and defeat memoization downstream. */
+const NO_REVIEW_ANNOTATIONS: PdfReviewAnnotation[] = [];
+
 export function PdfPreview() {
   const compilerBackend = useSettingsStore((s) => s.compilerBackend);
   const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
@@ -1056,6 +1060,29 @@ export function PdfPreview() {
     }
   }, [fitMode, containerSize, firstPageSize]);
 
+  // Stable identities + value-equality bailouts for the size reporters. These
+  // are effect dependencies inside PdfViewer; an inline arrow here changes
+  // identity every render, and setState with a fresh {width,height} re-renders
+  // even when nothing moved — together that closed a ResizeObserver feedback
+  // loop (observer recreated → initial delivery → setState → render → …) that
+  // kept the whole preview tree re-rendering ~20×/s and leaked until OOM.
+  const handleFirstPageSize = useCallback((w: number, h: number) => {
+    setFirstPageSize((prev) =>
+      prev && prev.width === w && prev.height === h
+        ? prev
+        : { width: w, height: h },
+    );
+  }, []);
+  const handleContainerResize = useCallback((w: number, h: number) => {
+    setContainerSize((prev) =>
+      prev && prev.width === w && prev.height === h
+        ? prev
+        : { width: w, height: h },
+    );
+  }, []);
+  const handleStartCapture = useCallback(() => setCaptureMode(true), []);
+  const handleCancelCapture = useCallback(() => setCaptureMode(false), []);
+
   const zoomIn = () => {
     setFitMode(null);
     setScale((s) => Math.min(4, s + 0.1));
@@ -1455,15 +1482,9 @@ export function PdfPreview() {
                   onTextClick={isActive ? handleTextClick : undefined}
                   onSynctexClick={isActive ? handleSynctexClick : undefined}
                   onTextSelect={isActive ? handleTextSelect : undefined}
-                  onFirstPageSize={
-                    isActive
-                      ? (w, h) => setFirstPageSize({ width: w, height: h })
-                      : undefined
-                  }
+                  onFirstPageSize={isActive ? handleFirstPageSize : undefined}
                   onContainerResize={
-                    isActive
-                      ? (w, h) => setContainerSize({ width: w, height: h })
-                      : undefined
+                    isActive ? handleContainerResize : undefined
                   }
                   onCurrentPageChange={
                     isActive ? handleCurrentPageChange : undefined
@@ -1475,16 +1496,16 @@ export function PdfPreview() {
                   openSearchRef={isActive ? openPdfSearchRef : undefined}
                   captureMode={isActive ? captureMode : false}
                   onCapture={isActive ? handleCapture : undefined}
-                  onCancelCapture={
-                    isActive ? () => setCaptureMode(false) : undefined
-                  }
+                  onCancelCapture={isActive ? handleCancelCapture : undefined}
                   onStartCapture={
                     isActive && aiProvider !== "none"
-                      ? () => setCaptureMode(true)
+                      ? handleStartCapture
                       : undefined
                   }
                   highlightLocation={isActive ? synctexHighlight : null}
-                  reviewAnnotations={isActive ? reviewAnnotations : []}
+                  reviewAnnotations={
+                    isActive ? reviewAnnotations : NO_REVIEW_ANNOTATIONS
+                  }
                   selectedReviewAnnotationId={
                     isActive ? selectedReviewId : null
                   }

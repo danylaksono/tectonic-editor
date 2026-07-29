@@ -125,6 +125,17 @@ export function invalidateDoc(docId: number): void {
   }
 }
 
+/** Forget every cached document without talking to the worker. Only for use
+ * when the worker itself is being terminated (memory-guard hard reset) — the
+ * docIds die with it, and a closeDocument RPC would just spin up a fresh
+ * worker to close ids that no longer exist. */
+export function dropDocCache(): void {
+  if (cache.size > 0) {
+    log.warn(`Dropped doc cache without closing (${cache.size} documents)`);
+  }
+  cache.clear();
+}
+
 /** Close all cached documents (e.g., on project close). */
 export async function clearDocCache(): Promise<void> {
   const count = cache.size;

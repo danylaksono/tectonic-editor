@@ -34,6 +34,8 @@ export interface MupdfClient {
     pageIndex: number,
     targetWidth: number,
   ): Promise<ArrayBuffer>;
+  /** Shrink MuPDF's decoded-resource store to `percent` of its budget. */
+  trimStore(percent: number): Promise<void>;
   destroy(): void;
 }
 
@@ -148,6 +150,7 @@ function createClient(): MupdfClient {
       call("searchPage", docId, pageIndex, needle, maxHits),
     renderThumbnail: (docId, pageIndex, targetWidth) =>
       call("renderThumbnail", docId, pageIndex, targetWidth),
+    trimStore: (percent) => call("trimStore", percent),
     destroy: () => worker.terminate(),
   };
 }

@@ -3,6 +3,7 @@ mod export;
 mod history;
 mod language_tool;
 mod latex;
+mod memory_watch;
 mod metadata;
 mod project_import;
 mod reference_sources;
@@ -668,6 +669,17 @@ async fn ai_set_api_key(key_name: String, value: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev builds: expose the WebView2 DevTools protocol so heap snapshots can
+    // be taken from outside the app (leak diagnosis). Must be set before the
+    // first WebView is created; an explicitly set variable wins.
+    #[cfg(all(windows, debug_assertions))]
+    if std::env::var_os("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").is_none() {
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--remote-debugging-port=9223",
+        );
+    }
+
     // Load .env file (walks up from cwd to find it)
     let _ = dotenvy::dotenv();
 
@@ -727,6 +739,8 @@ pub fn run() {
                     }
                 }
             });
+
+            memory_watch::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

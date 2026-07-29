@@ -96,6 +96,17 @@ methods.getAllPageSizes = (
   return sizes;
 };
 
+// MuPDF's store (decoded images, glyphs) is only trimmed when a document
+// closes, so a long reading session over a figure-heavy PDF grows the WASM
+// heap unboundedly — the 2026-07-29 OOM dump showed it at 2.4 GB. Trim it
+// every so often while rendering; shrinkStore on a small store is cheap.
+const RENDERS_PER_TRIM = 32;
+let rendersSinceTrim = 0;
+
+methods.trimStore = (percent: number): void => {
+  mupdf.shrinkStore(percent);
+};
+
 methods.drawPage = (
   docId: number,
   pageIndex: number,
@@ -154,6 +165,12 @@ methods.drawPage = (
   }
   pixmap.destroy();
   page.destroy();
+
+  if (++rendersSinceTrim >= RENDERS_PER_TRIM) {
+    rendersSinceTrim = 0;
+    mupdf.shrinkStore(60);
+  }
+
   return new ImageData(rgba, w, h);
 };
 

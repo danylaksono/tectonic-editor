@@ -38,6 +38,7 @@ import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
 import { scrollBehavior } from "@/lib/utils";
 import { APP_VISIBILITY_RESTORED } from "@/lib/debug/log-store";
+import { MUPDF_CLIENT_RESET } from "@/lib/debug/memory-guard";
 import type { PageSize, PdfSearchMatch, Rect } from "@/lib/mupdf/types";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { firstMatchFromPage, searchPdfPages } from "@/lib/mupdf/pdf-search";
@@ -244,6 +245,19 @@ export function PdfViewer({
     window.addEventListener(APP_VISIBILITY_RESTORED, handleRestore);
     return () =>
       window.removeEventListener(APP_VISIBILITY_RESTORED, handleRestore);
+  }, []);
+
+  // The memory guard restarts the MuPDF worker under memory pressure, which
+  // kills every docId — forget ours and re-run the load effect so the document
+  // reopens through the fresh worker.
+  const [mupdfResetGen, setMupdfResetGen] = useState(0);
+  useEffect(() => {
+    const handleReset = () => {
+      docIdRef.current = 0;
+      setMupdfResetGen((g) => g + 1);
+    };
+    window.addEventListener(MUPDF_CLIENT_RESET, handleReset);
+    return () => window.removeEventListener(MUPDF_CLIENT_RESET, handleReset);
   }, []);
 
   // Keep-alive scroll save/restore
@@ -515,7 +529,7 @@ export function PdfViewer({
         onError?.(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data, mupdfResetGen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // IntersectionObserver for lazy page rendering — only when active
   useEffect(() => {
@@ -557,17 +571,24 @@ export function PdfViewer({
     return () => observer.disconnect();
   }, [pageSizes, scale, isActive, focusGen, simplePreview]);
 
-  // Report container dimensions to parent for fit-to-width/height
+  // Report container dimensions to parent for fit-to-width/height. The
+  // callback lives in a ref so its identity can never recycle the observer:
+  // a freshly observe()d ResizeObserver always fires an initial delivery, so
+  // recreating it per callback identity turns an unstable parent callback
+  // into an infinite render loop (observed in the wild before the July 2026
+  // OOM — see handleContainerResize in PdfPreview).
+  const containerResizeRef = useRef(onContainerResize);
+  containerResizeRef.current = onContainerResize;
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !onContainerResize) return;
+    if (!container) return;
     const ro = new ResizeObserver((entries) => {
       const { width, height } = entries[0].contentRect;
-      onContainerResize(width, height);
+      containerResizeRef.current?.(width, height);
     });
     ro.observe(container);
     return () => ro.disconnect();
-  }, [onContainerResize]);
+  }, []);
 
   // Native dblclick listener for synctex
   useEffect(() => {
@@ -857,6 +878,19 @@ export function PdfViewer({
 
   const activeMatchData =
     activeMatch >= 0 ? searchMatches[activeMatch] : undefined;
+
+  // page number → annotations on that page, with stable array identities.
+  // An inline filter() here hands every MupdfPage a fresh array each render,
+  // defeating its memo() and re-rendering all 200+ pages on any parent render.
+  const reviewAnnotationsByPage = useMemo(() => {
+    const byPage = new Map<number, MupdfReviewAnnotation[]>();
+    for (const annotation of reviewAnnotations) {
+      const existing = byPage.get(annotation.page);
+      if (existing) existing.push(annotation);
+      else byPage.set(annotation.page, [annotation]);
+    }
+    return byPage;
+  }, [reviewAnnotations]);
 
   /** page number → every match rectangle on that page. */
   const searchRectsByPage = useMemo(() => {
@@ -1428,9 +1462,7 @@ export function PdfViewer({
                   highlight={
                     highlightLocation?.page === i + 1 ? highlightLocation : null
                   }
-                  reviewAnnotations={reviewAnnotations.filter(
-                    (annotation) => annotation.page === i + 1,
-                  )}
+                  reviewAnnotations={reviewAnnotationsByPage.get(i + 1)}
                   selectedReviewAnnotationId={selectedReviewAnnotationId}
                   onSelectReviewAnnotation={onSelectReviewAnnotation}
                   searchRects={

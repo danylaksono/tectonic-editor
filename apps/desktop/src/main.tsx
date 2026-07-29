@@ -12,6 +12,18 @@ const isDebugWindow = new URLSearchParams(window.location.search).has("debug");
 
 const log = createLogger("app");
 
+// Dev builds only: React's component-performance tracks emit a
+// performance.measure entry per component render and the timeline buffer is
+// never pruned — a long dev session accumulates millions of entries (multi-GB
+// of Blink heap). Prod builds don't emit these, so this is dev-only hygiene.
+if (import.meta.env.DEV) {
+  setInterval(() => {
+    performance.clearMeasures();
+    performance.clearMarks();
+    performance.clearResourceTimings();
+  }, 30_000);
+}
+
 // Catch unhandled promise rejections to prevent silent failures
 window.addEventListener("unhandledrejection", (event) => {
   log.error("Unhandled promise rejection", { reason: String(event.reason) });

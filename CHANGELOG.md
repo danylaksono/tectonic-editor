@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [1.4.7] - 2026-07-30
+
+Opal 1.4.7 is an urgent fix for runaway memory growth that could crash the app
+("Out of Memory") while a compiled PDF was open. Every release since 1.2.0 is
+affected; updating is strongly recommended.
+
+### Fixed
+
+- A ResizeObserver feedback loop kept the PDF preview re-rendering roughly
+  twenty times per second whenever a PDF was open — even while idle. The
+  churned memory was never reclaimed, so long reading sessions grew by
+  gigabytes until the renderer was killed, and even short sessions burned CPU
+  and battery. The loop is fixed at its source, and page re-renders no longer
+  cascade through every page of the document.
+- MuPDF's decoded-image store is now trimmed periodically during rendering
+  instead of only when a document closes, so reading a figure-heavy document
+  no longer grows the engine's memory without bound.
+
+### Added
+
+- A memory watchdog now monitors the real renderer process from outside the
+  WebView. Under sustained pressure it first trims caches and switches to
+  Lightweight PDF preview (with a notice); in the unlikely event memory keeps
+  climbing it restarts the PDF engine and reopens the document in place —
+  a brief re-render instead of a crash.
+
 ## [1.4.6] - 2026-07-28
 
 Opal 1.4.6 makes the compiled PDF a first-class thing to read and search, and

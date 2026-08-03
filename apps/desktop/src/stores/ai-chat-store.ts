@@ -6,6 +6,8 @@ import { useProposedChangesStore } from "./proposed-changes-store";
 import { createLogger } from "@/lib/debug/logger";
 import type { AiRequest, AiContext, AiMessage } from "@/lib/ai/types";
 import { AI_TOOL_DEFINITIONS, executeAiTool } from "@/lib/ai/tools";
+import { useSkillsStore } from "./skills-store";
+import type { Skill } from "@/lib/skills/types";
 
 const log = createLogger("ai-chat");
 
@@ -224,6 +226,12 @@ export interface TabState {
   totalInputTokens: number;
   totalOutputTokens: number;
   draft: TabDraft;
+  /**
+   * Name of the skill active for this tab, or null for plain chat. Sticky: a
+   * skill is a working mode, not a per-message decoration, so it survives
+   * until the user clears it.
+   */
+  activeSkillName: string | null;
 }
 
 /** Fields that are projected from the active tab to top-level state */
@@ -234,6 +242,7 @@ const TAB_FIELDS = [
   "error",
   "totalInputTokens",
   "totalOutputTokens",
+  "activeSkillName",
 ] as const;
 
 function makeDefaultTab(id: string): TabState {
@@ -247,6 +256,7 @@ function makeDefaultTab(id: string): TabState {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     draft: { input: "", pinnedContexts: [] },
+    activeSkillName: null,
   };
 }
 
@@ -278,6 +288,65 @@ function applyTabUpdate(
   return result;
 }
 
+// ─── Skills ───
+
+/**
+ * Resolve the skill a tab has active. Returns undefined for plain chat, and
+ * also when the tab names a skill that no longer exists — a file the user
+ * deleted or renamed between activating it and sending. The send proceeds as
+ * plain chat rather than failing, but it is logged: silently dropping a working
+ * mode is worse than a noisy one.
+ */
+function resolveActiveSkill(tab: TabState | undefined): Skill | undefined {
+  if (!tab?.activeSkillName) return undefined;
+  const skill = useSkillsStore.getState().getSkill(tab.activeSkillName);
+  if (!skill) {
+    log.warn("active skill not found — sending as plain chat", {
+      skill: tab.activeSkillName,
+      tab: tab.id,
+    });
+  }
+  return skill;
+}
+
+/**
+ * The tools an active skill permits. A skill may only *narrow* the surface:
+ * an absent `tools` list means all tools, and an empty one means none.
+ */
+function toolsForSkill(skill: Skill | undefined) {
+  if (!skill?.tools) return AI_TOOL_DEFINITIONS;
+  const allowed = new Set(skill.tools);
+  return AI_TOOL_DEFINITIONS.filter((t) => allowed.has(t.name));
+}
+
+/**
+ * Build the request handed to Rust. Both the initial prompt and every tool-loop
+ * continuation go through here, so an active skill — and its tool allowlist —
+ * cannot silently disappear part-way through an agent loop.
+ */
+function buildAiRequest(params: {
+  tabId: string;
+  projectPath: string;
+  prompt: string;
+  model: string;
+  messages: AiMessage[];
+  context?: AiContext;
+  skill?: Skill;
+}): AiRequest {
+  const { skill } = params;
+  return {
+    tabId: params.tabId,
+    projectPath: params.projectPath,
+    prompt: params.prompt,
+    model: params.model,
+    messages: params.messages,
+    context: params.context,
+    // Appended to the base system prompt on the Rust side, never replacing it
+    skillPrompt: skill?.body,
+    tools: toolsForSkill(skill),
+  };
+}
+
 // ─── State Interface ───
 
 const DEFAULT_TAB_ID = nextTabId();
@@ -290,6 +359,8 @@ interface AiChatState {
   error: string | null;
   totalInputTokens: number;
   totalOutputTokens: number;
+  /** Skill active for the current tab, or null for plain chat */
+  activeSkillName: string | null;
 
   // ── Tab state ──
   tabs: TabState[];
@@ -323,6 +394,13 @@ interface AiChatState {
   /** Currently selected model (passed per-prompt) */
   selectedModel: string;
   setSelectedModel: (model: string) => void;
+
+  /**
+   * Activate a skill for a tab (defaults to the active tab), or clear it with
+   * null. A skill that declares a `model` switches the picker to it; the user
+   * can still change it afterwards.
+   */
+  setActiveSkill: (skillName: string | null, tabId?: string) => void;
 
   // Actions
   sendPrompt: (
@@ -373,8 +451,19 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
   tabs: [makeDefaultTab(DEFAULT_TAB_ID)],
   activeTabId: DEFAULT_TAB_ID,
 
+  activeSkillName: null,
+
   selectedModel: "claude-sonnet-5",
   setSelectedModel: (model) => set({ selectedModel: model }),
+
+  setActiveSkill: (skillName, tabId) => {
+    const targetTabId = tabId ?? get().activeTabId;
+    set((s) => applyTabUpdate(s, targetTabId, { activeSkillName: skillName }));
+
+    if (!skillName) return;
+    const model = useSkillsStore.getState().getSkill(skillName)?.model;
+    if (model) set({ selectedModel: model });
+  },
 
   pendingInitialPrompt: null,
   setPendingInitialPrompt: (prompt) => set({ pendingInitialPrompt: prompt }),
@@ -530,7 +619,7 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
     });
 
     try {
-      const aiRequest: AiRequest = {
+      const aiRequest = buildAiRequest({
         tabId: activeTabId,
         projectPath,
         prompt,
@@ -556,8 +645,8 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
                   files: [],
                   action: "chat",
                 }),
-        tools: AI_TOOL_DEFINITIONS,
-      };
+        skill: resolveActiveSkill(activeTab),
+      });
 
       await invoke("ai_execute", { request: aiRequest });
       log.info(
@@ -684,6 +773,7 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
       error: targetTab.error,
       totalInputTokens: targetTab.totalInputTokens,
       totalOutputTokens: targetTab.totalOutputTokens,
+      activeSkillName: targetTab.activeSkillName,
     });
   },
 
@@ -809,8 +899,29 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
       tools: pendingCalls.map((c) => c.name),
     });
 
+    const activeSkill = resolveActiveSkill(tab);
+    const permittedTools = new Set(
+      toolsForSkill(activeSkill).map((t) => t.name),
+    );
+
     const results: ContentBlock[] = [];
     for (const call of pendingCalls) {
+      // The provider was only offered the permitted tools, but enforce it on
+      // execution too: a skill's allowlist is a guarantee about what that skill
+      // can do, not a hint the model is trusted to respect.
+      if (!permittedTools.has(call.name!)) {
+        log.warn("blocked a tool call outside the active skill's allowlist", {
+          tool: call.name,
+          skill: activeSkill?.name,
+        });
+        results.push({
+          type: "tool_result",
+          tool_use_id: call.id!,
+          content: `The "${call.name}" tool is not available in the "${activeSkill?.title ?? "current"}" skill. Do not try to call it again.`,
+          is_error: true,
+        });
+        continue;
+      }
       const res = await executeAiTool(call.name!, call.input, call.id!);
       results.push({
         type: "tool_result",
@@ -848,14 +959,14 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
       return;
     }
 
-    const request: AiRequest = {
+    const request = buildAiRequest({
       tabId,
       projectPath,
       prompt: "", // continuation — the tool results are already in messages
       model: get().selectedModel,
       messages: toAiMessages(current.messages),
-      tools: AI_TOOL_DEFINITIONS,
-    };
+      skill: resolveActiveSkill(current),
+    });
 
     try {
       await invoke("ai_execute", { request });

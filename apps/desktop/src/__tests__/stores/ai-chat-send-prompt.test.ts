@@ -44,6 +44,7 @@ function resetAiChatStore() {
         totalInputTokens: 0,
         totalOutputTokens: 0,
         draft: { input: "", pinnedContexts: [] },
+        activeSkillName: null,
       },
     ],
     activeTabId: "tab-default",

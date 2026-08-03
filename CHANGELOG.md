@@ -4,6 +4,14 @@
 
 ### Added
 
+- **Style suggestions** while you write: straight quotes that would come out as
+  `”text”`, `...` where LaTeX wants `\dots`, `$$…$$` instead of `\[…\]`,
+  plain-TeX font switches like `\bf`, `eqnarray`, a heading level skipped in the
+  table of contents, and a missing `~` in `Figure \ref{...}` so a reference can
+  never start a line. They appear as blue hints, never errors, and most carry a
+  one-click fix. Nothing fires inside comments, verbatim blocks, math, URLs, or
+  file paths, where that punctuation is deliberate. Turn the whole set off in
+  Settings → Editor → Style suggestions.
 - The assistant can **run Python** for analysis, computation, and generating
   figures, using the project's own virtual environment (created on first use).
   Every script is shown to you in full and runs only when you approve it —

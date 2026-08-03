@@ -192,7 +192,13 @@ With execution available, folder-shaped Agent Skills become usable, which needs:
    on first use (question 3), and the network is not restricted but is stated
    plainly at the approval prompt (question 2). Skills declaring it are flagged
    in both the picker and the gallery.
-5. **`install_python_packages`** with its own prompt.
+5. ~~**`install_python_packages`**~~ **DONE** — always prompts, never
+   covered by the auto-approve toggle or the already-approved-script
+   shortcut. Requirement specifiers are validated in both TS and Rust:
+   `uv pip install` passes its arguments through, so an entry like
+   `--index-url=http://evil.example` would have redirected the package
+   index. The approval store was generalised to
+   `pending-approvals-store` to carry both kinds.
 6. **Folder skills + skill-relative reads** (§7).
 7. Docs: skills.md gains an execution section; CHANGELOG.
 

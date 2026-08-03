@@ -89,6 +89,7 @@ the model tries.
 | `lookup_reference` | Verify a DOI, arXiv ID, or ISBN |
 | `add_citation` | Add a resolver-verified `.bib` entry |
 | `run_python` | Run a Python script in the project's environment — **you approve each script before it runs** |
+| `install_python_packages` | Add Python dependencies a script needs — **you approve the exact list every time** |
 
 Two useful shapes:
 
@@ -139,10 +140,14 @@ link is not a step worth having; downloading and looking at the file first is.
 Import checks that a file really is a skill and refuses it with a reason rather
 than copying it, so a stray README cannot end up in your skills folder.
 
-What a hostile skill cannot do: run code, edit files without your review, or
-grant itself tools. What it could still try: talk the assistant into proposing
-changes you did not ask for. Reading diffs before accepting them is the
-protection — as it is for everything else the assistant proposes.
+What a hostile skill cannot do: edit files without your review, run a script or
+install a package without your approval, or grant itself tools it was not given.
+What it could still try: talk the assistant into proposing changes you did not
+ask for, or into writing a script that does something you would not want.
+Reading what you approve — diffs, scripts, package lists — is the protection.
+
+That last point matters more for a skill that declares `run_python`. An edit you
+accept can be undone from version history; a script you run cannot.
 
 ## Troubleshooting
 

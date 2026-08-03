@@ -143,6 +143,33 @@ fn running_scripts(
     RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Whether a string is a PyPI requirement specifier rather than a flag, a path,
+/// or a shell fragment. Conservative on purpose: it guards an argument list
+/// that is otherwise passed verbatim to `uv pip install`.
+fn is_valid_requirement(spec: &str) -> bool {
+    let spec = spec.trim();
+    if spec.is_empty() || spec.len() > 128 {
+        return false;
+    }
+    // Must start with a package-name character — this is what rejects flags.
+    if !spec
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return false;
+    }
+    // Name, extras and version specifiers only. No whitespace, path separators,
+    // shell metacharacters, or URLs.
+    spec.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '.' | '-' | '_' | '[' | ']' | ',' | '=' | '<' | '>' | '!' | '~' | '*' | '+'
+            )
+    })
+}
+
 /// FNV-1a. Identical code maps to the same script file, so re-running something
 /// unchanged does not litter the scripts directory.
 fn content_hash(code: &str) -> String {
@@ -432,6 +459,17 @@ pub async fn uv_add_packages(
         return Err("No .venv found. Run setup_project_venv first.".to_string());
     }
 
+    // `uv pip install` passes its arguments straight through, so an entry like
+    // `--index-url=http://evil.example` would silently redirect the package
+    // index. Accept requirement specifiers only — never flags or paths.
+    if let Some(bad) = packages.iter().find(|p| !is_valid_requirement(p)) {
+        return Err(format!(
+            "Refusing to install '{}': only package requirements are accepted \
+             (e.g. 'numpy' or 'pandas>=2.0'), not flags or paths.",
+            bad
+        ));
+    }
+
     let mut args = vec!["pip".to_string(), "install".to_string()];
     args.extend(packages);
 
@@ -575,5 +613,67 @@ pub fn uv_cancel_python(run_id: String) -> bool {
     match running.remove(&run_id) {
         Some(sender) => sender.send(()).is_ok(),
         None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_ordinary_requirements() {
+        for spec in [
+            "numpy",
+            "pandas>=2.0",
+            "scipy==1.11.4",
+            "matplotlib!=3.8.0",
+            "requests~=2.31",
+            "ruff<1",
+            "python-dateutil",
+            "zope.interface",
+            "uvicorn[standard]",
+            "pandas[excel,plot]>=2,<3",
+        ] {
+            assert!(is_valid_requirement(spec), "should accept {spec}");
+        }
+    }
+
+    #[test]
+    fn rejects_flags_that_would_redirect_the_index() {
+        // The reason this validator exists: uv pip install passes args through.
+        for spec in [
+            "--index-url=http://evil.example/simple",
+            "-i http://evil.example",
+            "--target=/etc",
+            "--pre",
+        ] {
+            assert!(!is_valid_requirement(spec), "should reject {spec}");
+        }
+    }
+
+    #[test]
+    fn rejects_paths_urls_and_shell_fragments() {
+        for spec in [
+            "./local/pkg",
+            "/abs/path",
+            r"C:\Windows\System32",
+            "https://evil.example/pkg.tar.gz",
+            "git+https://github.com/x/y",
+            "numpy; rm -rf ~",
+            "numpy && curl evil",
+            "numpy | sh",
+            "numpy$(whoami)",
+            "numpy `id`",
+            "pkg with space",
+            "",
+            "   ",
+        ] {
+            assert!(!is_valid_requirement(spec), "should reject {spec:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_absurdly_long_specs() {
+        assert!(!is_valid_requirement(&"a".repeat(129)));
     }
 }

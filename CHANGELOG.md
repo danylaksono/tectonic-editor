@@ -13,6 +13,11 @@
   They run with your account's file and network access and are **not**
   sandboxed, which the approval prompt says plainly. Skills that can run code
   are flagged in the skill picker and gallery.
+- The assistant can **add Python packages** a script needs. You see the exact
+  list and approve it every time — this one is never skipped, because a
+  mistyped package name looks perfectly ordinary and cannot be judged by
+  reading it. Only package names and version specifiers are accepted; flags,
+  paths, and URLs are refused.
 - **Skills** for the AI assistant: reusable working modes you invoke by typing
   `/` in the chat. Five are built in — **Proofread**, **Fix Build**, **Continue
   Writing**, **Explain**, and **Find References** — and a skill stays active for

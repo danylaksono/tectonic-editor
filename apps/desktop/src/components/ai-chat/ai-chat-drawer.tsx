@@ -15,7 +15,7 @@ import { ChatMessages } from "./chat-messages";
 import { ChatComposer } from "./chat-composer";
 import { ChatTabBar } from "./chat-tab-bar";
 import { SkillGallery } from "./skill-gallery";
-import { PendingScriptCard } from "./pending-script-card";
+import { ApprovalCard } from "./approval-card";
 
 const MIN_HEIGHT = 150;
 const DEFAULT_HEIGHT = 360;
@@ -236,8 +236,8 @@ export function AiChatDrawer() {
           <ChatMessages />
         </div>
 
-        {/* Script approval — the assistant's turn is paused while this shows */}
-        <PendingScriptCard />
+        {/* Script / package approval — the turn is paused while this shows */}
+        <ApprovalCard />
 
         {/* Composer */}
         <ChatComposer isOpen={isOpen} />

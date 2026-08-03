@@ -16,7 +16,7 @@ import {
   type CitationCandidate,
 } from "@/lib/bibliography-import";
 import { findBibEntries } from "@/lib/bibtex-entries";
-import { usePendingScriptsStore } from "@/stores/pending-scripts-store";
+import { usePendingApprovalsStore } from "@/stores/pending-approvals-store";
 import { invoke } from "@tauri-apps/api/core";
 import type { AiToolDefinition } from "./types";
 
@@ -258,6 +258,32 @@ export const AI_TOOL_DEFINITIONS: AiToolDefinition[] = [
         },
       },
       required: ["code", "description"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "install_python_packages",
+    description:
+      "Install Python packages into the project's environment so a script " +
+      "can import them. Use only package names and version specifiers " +
+      "(e.g. 'numpy', 'pandas>=2.0') — flags, paths and URLs are refused. " +
+      "The user approves the exact list before anything is installed, and " +
+      "is always asked, so install only what the task needs and say why.",
+    input_schema: {
+      type: "object",
+      properties: {
+        packages: {
+          type: "array",
+          items: { type: "string" },
+          description: "Requirement specifiers, e.g. ['numpy', 'pandas>=2.0']",
+        },
+        reason: {
+          type: "string",
+          description:
+            "One line the user sees, e.g. 'Needed to read the results spreadsheet'.",
+        },
+      },
+      required: ["packages", "reason"],
       additionalProperties: false,
     },
   },
@@ -510,7 +536,8 @@ async function runPython(
   const projectPath = useDocumentStore.getState().projectRoot;
   if (!projectPath) return err("No project is open.");
 
-  const decision = await usePendingScriptsStore.getState().request({
+  const decision = await usePendingApprovalsStore.getState().request({
+    kind: "script",
     id: toolUseId,
     code,
     description,
@@ -571,6 +598,83 @@ async function runPython(
 
   const failed = result.timed_out || result.cancelled || result.exit_code !== 0;
   return failed ? err(parts.join("\n\n")) : ok(parts.join("\n\n"));
+}
+
+/**
+ * Mirrors the Rust-side guard in `uv_add_packages`. Duplicated deliberately:
+ * the Rust check is the one that protects the command, this one produces a
+ * message the model can act on instead of a raw command failure.
+ */
+const REQUIREMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._\-[\],=<>!~*+]*$/;
+
+async function installPythonPackages(
+  input: unknown,
+  toolUseId: string,
+): Promise<ToolExecutionResult> {
+  const { packages, reason } = (input ?? {}) as {
+    packages?: unknown;
+    reason?: string;
+  };
+
+  if (!Array.isArray(packages) || packages.length === 0) {
+    return err(
+      "install_python_packages requires a non-empty `packages` array.",
+    );
+  }
+  if (!reason?.trim()) {
+    return err(
+      "install_python_packages requires `reason` — the user sees it when deciding.",
+    );
+  }
+
+  const specs = packages.map((p) => String(p).trim());
+  const invalid = specs.filter(
+    (s) => !REQUIREMENT_RE.test(s) || s.length > 128,
+  );
+  if (invalid.length > 0) {
+    return err(
+      `Refused: ${invalid.join(", ")}. Only package names and version ` +
+        "specifiers are accepted — not flags, paths, or URLs.",
+    );
+  }
+
+  const projectPath = useDocumentStore.getState().projectRoot;
+  if (!projectPath) return err("No project is open.");
+
+  const decision = await usePendingApprovalsStore.getState().request({
+    kind: "packages",
+    id: toolUseId,
+    packages: specs,
+    reason,
+    createdAt: Date.now(),
+  });
+
+  if (decision === "rejected") {
+    return err(
+      "The user declined to install these packages. Work with what is already available, or ask what they would prefer.",
+    );
+  }
+  if (decision === "timeout") {
+    return err("The user did not respond. Nothing was installed.");
+  }
+
+  try {
+    await invoke("setup_project_venv", { projectPath });
+  } catch (e) {
+    return err(`Python environment could not be prepared: ${String(e)}`);
+  }
+
+  try {
+    const output = await invoke<string>("uv_add_packages", {
+      packages: specs,
+      projectPath,
+    });
+    return ok(
+      `Installed: ${specs.join(", ")}\n\n${output.slice(0, 4000)}`.trim(),
+    );
+  } catch (e) {
+    return err(`Install failed: ${String(e)}`);
+  }
 }
 
 async function readBuildLog(): Promise<ToolExecutionResult> {
@@ -889,6 +993,8 @@ export async function executeAiTool(
         return await addCitation(input, toolUseId);
       case "run_python":
         return await runPython(input, toolUseId);
+      case "install_python_packages":
+        return await installPythonPackages(input, toolUseId);
       default:
         return err(`Unknown tool: ${name}`);
     }

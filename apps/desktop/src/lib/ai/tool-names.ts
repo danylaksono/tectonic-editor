@@ -18,6 +18,7 @@ export const AI_TOOL_NAMES = [
   "lookup_reference",
   "add_citation",
   "run_python",
+  "install_python_packages",
 ] as const;
 
 /**
@@ -25,6 +26,9 @@ export const AI_TOOL_NAMES = [
  * declaring one of these gets a prominent warning in the picker and gallery
  * rather than being listed as just another entry in a comma-separated list.
  */
-export const DANGEROUS_TOOL_NAMES: readonly string[] = ["run_python"];
+export const DANGEROUS_TOOL_NAMES: readonly string[] = [
+  "run_python",
+  "install_python_packages",
+];
 
 export type AiToolName = (typeof AI_TOOL_NAMES)[number];

@@ -1,17 +1,17 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  usePendingScriptsStore,
+  usePendingApprovalsStore,
   APPROVAL_TIMEOUT_MS,
-} from "@/stores/pending-scripts-store";
+} from "@/stores/pending-approvals-store";
 import { useDocumentStore } from "@/stores/document-store";
 import { executeAiTool } from "@/lib/ai/tools";
 import { AI_TOOL_DEFINITIONS } from "@/lib/ai/tools";
 
-const store = () => usePendingScriptsStore.getState();
+const store = () => usePendingApprovalsStore.getState();
 
 function resetStore() {
-  usePendingScriptsStore.setState({
+  usePendingApprovalsStore.setState({
     pending: [],
     approvedCode: [],
     autoApprove: false,
@@ -34,6 +34,7 @@ beforeEach(() => {
   useDocumentStore.setState({ projectRoot: "/project" } as any);
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
     if (cmd === "uv_run_python") return RESULT as any;
+    if (cmd === "uv_add_packages") return "Installed 1 package" as any;
     return undefined as any;
   });
 });
@@ -46,7 +47,13 @@ describe("approval gate", () => {
   it("holds the call until the user approves", async () => {
     const settled = vi.fn();
     const request = store()
-      .request({ id: "s1", code: "print(1)", description: "d", createdAt: 0 })
+      .request({
+        kind: "script",
+        id: "s1",
+        code: "print(1)",
+        description: "d",
+        createdAt: 0,
+      })
       .then(settled);
 
     await Promise.resolve();
@@ -61,6 +68,7 @@ describe("approval gate", () => {
 
   it("reports rejection", async () => {
     const request = store().request({
+      kind: "script",
       id: "s2",
       code: "print(1)",
       description: "d",
@@ -72,6 +80,7 @@ describe("approval gate", () => {
 
   it("does not re-prompt for byte-identical code already approved", async () => {
     const first = store().request({
+      kind: "script",
       id: "s3",
       code: "print(1)",
       description: "d",
@@ -82,6 +91,7 @@ describe("approval gate", () => {
 
     // An agent loop retrying the same script must not need a second click
     const second = store().request({
+      kind: "script",
       id: "s4",
       code: "print(1)",
       description: "d",
@@ -93,6 +103,7 @@ describe("approval gate", () => {
 
   it("re-prompts once the code changes", async () => {
     const first = store().request({
+      kind: "script",
       id: "s5",
       code: "print(1)",
       description: "d",
@@ -102,6 +113,7 @@ describe("approval gate", () => {
     await first;
 
     store().request({
+      kind: "script",
       id: "s6",
       code: "print(2)",
       description: "d",
@@ -113,6 +125,7 @@ describe("approval gate", () => {
   it("skips the prompt when auto-approve is on", async () => {
     store().setAutoApprove(true);
     const decision = await store().request({
+      kind: "script",
       id: "s7",
       code: "print(1)",
       description: "d",
@@ -126,6 +139,7 @@ describe("approval gate", () => {
     vi.useFakeTimers();
     try {
       const request = store().request({
+        kind: "script",
         id: "s8",
         code: "print(1)",
         description: "d",
@@ -141,12 +155,14 @@ describe("approval gate", () => {
 
   it("rejectAll settles everything waiting", async () => {
     const a = store().request({
+      kind: "script",
       id: "s9",
       code: "a",
       description: "d",
       createdAt: 0,
     });
     const b = store().request({
+      kind: "script",
       id: "s10",
       code: "b",
       description: "d",
@@ -245,5 +261,112 @@ describe("run_python tool", () => {
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/time limit/i);
     expect(result.content).toContain("partial");
+  });
+});
+
+describe("install_python_packages", () => {
+  it("is offered to the model", () => {
+    expect(AI_TOOL_DEFINITIONS.map((t) => t.name)).toContain(
+      "install_python_packages",
+    );
+  });
+
+  it("always prompts, even when auto-approve is on", async () => {
+    // A typosquatted package name reads as fine; unlike a script, the user
+    // cannot judge it by reading, so the shortcut must not cover it.
+    store().setAutoApprove(true);
+    const call = executeAiTool(
+      "install_python_packages",
+      { packages: ["numpy"], reason: "For the maths" },
+      "p1",
+    );
+    await Promise.resolve();
+    expect(store().pending).toHaveLength(1);
+    store().approve("p1");
+    await call;
+  });
+
+  it("is not covered by a previously approved script", async () => {
+    const first = store().request({
+      kind: "script",
+      id: "sx",
+      code: "numpy",
+      description: "d",
+      createdAt: 0,
+    });
+    store().approve("sx");
+    await first;
+
+    const decision = store().request({
+      kind: "packages",
+      id: "px",
+      packages: ["numpy"],
+      reason: "r",
+      createdAt: 0,
+    });
+    expect(store().pending.map((p) => p.id)).toEqual(["px"]);
+    store().reject("px");
+    expect(await decision).toBe("rejected");
+  });
+
+  it("installs nothing until approved", async () => {
+    const call = executeAiTool(
+      "install_python_packages",
+      { packages: ["numpy"], reason: "For the maths" },
+      "p2",
+    );
+    await Promise.resolve();
+    expect(
+      vi.mocked(invoke).mock.calls.some(([c]) => c === "uv_add_packages"),
+    ).toBe(false);
+
+    store().approve("p2");
+    await call;
+    expect(
+      vi.mocked(invoke).mock.calls.some(([c]) => c === "uv_add_packages"),
+    ).toBe(true);
+  });
+
+  it("refuses flags that would redirect the package index", async () => {
+    for (const bad of [
+      "--index-url=http://evil.example",
+      "-i",
+      "./local/pkg",
+      "https://evil.example/p.tar.gz",
+      "numpy; rm -rf ~",
+    ]) {
+      const result = await executeAiTool(
+        "install_python_packages",
+        { packages: [bad], reason: "r" },
+        `bad-${bad}`,
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content).toMatch(/Refused/);
+    }
+    // Nothing may even reach the approval queue
+    expect(store().pending).toHaveLength(0);
+  });
+
+  it("accepts ordinary requirement specifiers", async () => {
+    const call = executeAiTool(
+      "install_python_packages",
+      { packages: ["numpy", "pandas>=2.0", "uvicorn[standard]"], reason: "r" },
+      "p3",
+    );
+    await Promise.resolve();
+    expect(store().pending).toHaveLength(1);
+    store().approve("p3");
+    const result = await call;
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("requires a reason", async () => {
+    const result = await executeAiTool(
+      "install_python_packages",
+      { packages: ["numpy"] },
+      "p4",
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content).toMatch(/reason/);
   });
 });

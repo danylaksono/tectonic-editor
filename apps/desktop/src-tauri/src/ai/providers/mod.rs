@@ -68,7 +68,10 @@ pub fn default_latex_system_prompt() -> String {
         "- The working directory is the project root: write figures to ",
         "'figures/' and reference them with \\includegraphics.\n",
         "- If the user declines a script, do not re-run it unchanged — ask ",
-        "what they would prefer instead.",
+        "what they would prefer instead.\n",
+        "- install_python_packages adds dependencies a script needs. Install ",
+        "only what the task requires, name the packages exactly, and say why. ",
+        "The user is asked every time, so do not batch speculative extras.",
     )
     .to_string()
 }

@@ -52,6 +52,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 // Mock @tauri-apps/api/path
 vi.mock("@tauri-apps/api/path", () => ({
   join: vi.fn((...args: string[]) => Promise.resolve(args.join("/"))),
+  homeDir: vi.fn(() => Promise.resolve("/home/test")),
 }));
 
 // Mock @tauri-apps/plugin-fs

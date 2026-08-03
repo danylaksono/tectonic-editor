@@ -41,7 +41,7 @@ Field rules:
 
 | field | required | notes |
 | --- | --- | --- |
-| `name` | yes | kebab-case, unique within a source; the `/name` invocation token |
+| `name` | no | kebab-case, unique within a source; the `/name` invocation token. Defaults to the file stem, so `proofread.md` needs no `name:` line |
 | `title` | no | defaults to `name` prettified |
 | `description` | yes | one line, shown in picker + gallery |
 | `icon` | no | lucide name; falls back to `SparklesIcon` |
@@ -151,6 +151,7 @@ declare scope in v1. Left as a known gap.
 | `lib/skills/parse.ts` | frontmatter parser + validation |
 | `lib/skills/builtin.ts` | the five built-ins as literals |
 | `lib/skills/load.ts` | disk scan of the two dirs, precedence merge |
+| `lib/ai/tool-names.ts` | tool-name list, split out so `parse.ts` need not import `tools.ts` (and the store chain behind it); a test asserts the two stay in sync |
 | `lib/fuzzy-search.ts` | promoted from the orphan test |
 | `stores/skills-store.ts` | `skills`, `errors`, `loadSkills()`, `isLoading` |
 | `components/ai-chat/skill-picker.tsx` | the `/` dropdown |

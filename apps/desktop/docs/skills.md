@@ -88,6 +88,7 @@ the model tries.
 | `search_references` | Search for a reference by title/author/year |
 | `lookup_reference` | Verify a DOI, arXiv ID, or ISBN |
 | `add_citation` | Add a resolver-verified `.bib` entry |
+| `run_python` | Run a Python script in the project's environment — **you approve each script before it runs** |
 
 Two useful shapes:
 
@@ -99,6 +100,21 @@ Two useful shapes:
 A `tools:` list naming only unknown tools resolves to *no* tools rather than all
 of them: a typo must never quietly widen a skill's reach. The gallery shows a
 warning when this happens.
+
+### Skills that run code
+
+`run_python` is different in kind from the others: it acts outside the document.
+A skill that declares it — or that declares no `tools:` at all, and so gets
+everything — is marked with an amber shield in the `/` picker and carries a
+warning in the gallery.
+
+Every script is shown to you in full and runs only when you click **Run**. It
+then runs with your account's file and network access; a virtual environment
+isolates *dependencies*, not access, and Opal does not sandbox it. Approving a
+script means you have read it.
+
+If a skill does not need to compute anything, leave `run_python` out. Most
+writing skills should.
 
 ## Adding a skill
 

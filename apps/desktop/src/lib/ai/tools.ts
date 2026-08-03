@@ -16,6 +16,8 @@ import {
   type CitationCandidate,
 } from "@/lib/bibliography-import";
 import { findBibEntries } from "@/lib/bibtex-entries";
+import { usePendingScriptsStore } from "@/stores/pending-scripts-store";
+import { invoke } from "@tauri-apps/api/core";
 import type { AiToolDefinition } from "./types";
 
 /**
@@ -227,7 +229,49 @@ export const AI_TOOL_DEFINITIONS: AiToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "run_python",
+    description:
+      "Run a Python script in the project's virtual environment and return " +
+      "its output. Use it for analysis, computation, and generating figures " +
+      "to include in the document. The user is shown the code and must " +
+      "approve it before it runs — say what the script will do before " +
+      "calling this. Scripts run with the user's own file and network " +
+      "access, so keep them minimal and never destructive. The working " +
+      "directory is the project root, so write figures to 'figures/'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          description: "The complete Python script to run.",
+        },
+        description: {
+          type: "string",
+          description:
+            "One line, shown to the user in the approval prompt, e.g. " +
+            "'Plot the convergence data from results.csv'.",
+        },
+        timeout_secs: {
+          type: "number",
+          description: "Optional wall-clock limit, default 60, maximum 600.",
+        },
+      },
+      required: ["code", "description"],
+      additionalProperties: false,
+    },
+  },
 ];
+
+interface PythonRunResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out: boolean;
+  cancelled: boolean;
+  truncated: boolean;
+  script_path: string;
+}
 
 export interface ToolExecutionResult {
   content: string;
@@ -436,6 +480,97 @@ async function compileDocument(): Promise<ToolExecutionResult> {
   } finally {
     useDocumentStore.getState().setIsCompiling(false);
   }
+}
+
+/**
+ * Run a Python script, gated on the user's approval.
+ *
+ * Unlike `propose_edit`, this waits: the model needs the script's output to
+ * carry on, so the tool call blocks until the user decides. `pending-scripts-
+ * store` handles the waiting, the session-level "already approved this exact
+ * code" shortcut, and the timeout.
+ */
+async function runPython(
+  input: unknown,
+  toolUseId: string,
+): Promise<ToolExecutionResult> {
+  const { code, description, timeout_secs } = (input ?? {}) as {
+    code?: string;
+    description?: string;
+    timeout_secs?: number;
+  };
+
+  if (!code?.trim()) return err("run_python requires `code`.");
+  if (!description?.trim()) {
+    return err(
+      "run_python requires `description` — the user sees it when deciding whether to run the script.",
+    );
+  }
+
+  const projectPath = useDocumentStore.getState().projectRoot;
+  if (!projectPath) return err("No project is open.");
+
+  const decision = await usePendingScriptsStore.getState().request({
+    id: toolUseId,
+    code,
+    description,
+    createdAt: Date.now(),
+  });
+
+  if (decision === "rejected") {
+    return err(
+      "The user declined to run this script. Do not run it again unchanged — ask what they would prefer.",
+    );
+  }
+  if (decision === "timeout") {
+    return err(
+      "The user did not respond to the approval prompt. The script did not run.",
+    );
+  }
+
+  // Approved. Create the environment on first use rather than making the user
+  // find a setting — it is excluded from history and export, so it costs
+  // nothing but disk.
+  try {
+    await invoke("setup_project_venv", { projectPath });
+  } catch (e) {
+    return err(
+      `Python environment could not be prepared: ${String(e)}. ` +
+        "Ask the user to check that uv is installed (Settings → Python).",
+    );
+  }
+
+  let result: PythonRunResult;
+  try {
+    result = await invoke<PythonRunResult>("uv_run_python", {
+      code,
+      projectPath,
+      runId: toolUseId,
+      timeoutSecs: timeout_secs,
+    });
+  } catch (e) {
+    return err(`Failed to run the script: ${String(e)}`);
+  }
+
+  const parts: string[] = [];
+  if (result.timed_out) {
+    parts.push(
+      "The script was killed for exceeding its time limit. Its output up to that point:",
+    );
+  } else if (result.cancelled) {
+    parts.push("The user stopped the script. Partial output:");
+  } else {
+    parts.push(`Exit code: ${result.exit_code}`);
+  }
+  if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
+  if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
+  if (!result.stdout && !result.stderr) parts.push("(no output)");
+  if (result.truncated) {
+    parts.push("[output was truncated — have the script print less]");
+  }
+
+  const failed = result.timed_out || result.cancelled || result.exit_code !== 0;
+  return failed ? err(parts.join("\n\n")) : ok(parts.join("\n\n"));
 }
 
 async function readBuildLog(): Promise<ToolExecutionResult> {
@@ -752,6 +887,8 @@ export async function executeAiTool(
         return await lookupReferenceTool(input);
       case "add_citation":
         return await addCitation(input, toolUseId);
+      case "run_python":
+        return await runPython(input, toolUseId);
       default:
         return err(`Unknown tool: ${name}`);
     }

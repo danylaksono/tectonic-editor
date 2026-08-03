@@ -7,6 +7,7 @@ import { createLogger } from "@/lib/debug/logger";
 import type { AiRequest, AiContext, AiMessage } from "@/lib/ai/types";
 import { AI_TOOL_DEFINITIONS, executeAiTool } from "@/lib/ai/tools";
 import { useSkillsStore } from "./skills-store";
+import { usePendingScriptsStore } from "./pending-scripts-store";
 import type { Skill } from "@/lib/skills/types";
 
 const log = createLogger("ai-chat");
@@ -669,6 +670,9 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
   cancelExecution: async () => {
     const { activeTabId } = get();
     set({ _cancelledByUser: true });
+    // A paused run_python call would otherwise keep waiting on a prompt for a
+    // turn the user has already abandoned.
+    usePendingScriptsStore.getState().rejectAll();
     try {
       await invoke("ai_cancel", { tabId: activeTabId });
     } catch {

@@ -111,10 +111,78 @@ pub struct VenvInfo {
 }
 
 #[derive(serde::Serialize)]
-pub struct UvCommandResult {
+pub struct PythonRunResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    /// The script exceeded its time budget and was killed.
+    pub timed_out: bool,
+    /// `uv_cancel_python` was called for this run.
+    pub cancelled: bool,
+    /// Output exceeded `OUTPUT_CAP_BYTES` and what is returned is partial.
+    pub truncated: bool,
+    /// Where the executed script was written, so the user can inspect it.
+    pub script_path: String,
+}
+
+// ─── Script execution limits ───
+
+const DEFAULT_RUN_TIMEOUT_SECS: u64 = 60;
+const MAX_RUN_TIMEOUT_SECS: u64 = 600;
+/// Retained per stream. Small on purpose: this text ends up in the model's
+/// context, and an unbounded buffer is how the 1.4.7 OOM happened.
+const OUTPUT_CAP_BYTES: usize = 32 * 1024;
+
+/// Cancellation channels for in-flight scripts, keyed by the caller's run id.
+fn running_scripts(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>
+{
+    static RUNNING: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    > = std::sync::OnceLock::new();
+    RUNNING.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// FNV-1a. Identical code maps to the same script file, so re-running something
+/// unchanged does not litter the scripts directory.
+fn content_hash(code: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in code.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", hash)
+}
+
+/// Drain a stream, keeping at most `cap` bytes. Reading continues past the cap
+/// so the child never blocks writing into a full pipe — the excess is simply
+/// not retained.
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(mut reader: R, cap: usize) -> (String, bool) {
+    use tokio::io::AsyncReadExt;
+
+    let mut kept: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut truncated = false;
+
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                if kept.len() < cap {
+                    let take = std::cmp::min(n, cap - kept.len());
+                    kept.extend_from_slice(&chunk[..take]);
+                    if take < n {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    (String::from_utf8_lossy(&kept).to_string(), truncated)
 }
 
 // ─── Helper: build PATH with venv bin prepended ───
@@ -390,45 +458,122 @@ pub async fn uv_add_packages(
     Ok(stdout)
 }
 
+/// Run a Python script in the project's virtual environment.
+///
+/// This replaces the former `uv_run_command`, which took a command *string*,
+/// split it on whitespace and executed the first token as a program — that was
+/// arbitrary command execution with no timeout, no output limit and no way to
+/// cancel. Taking the code itself instead means:
+///
+/// - nothing but the venv's Python is ever executed;
+/// - quoting is a non-issue, since no shell string is built;
+/// - the script is written to `.tectonic-editor/scripts/` so the user can see
+///   exactly what ran.
+///
+/// The child is killed on timeout or when `uv_cancel_python` is called with the
+/// same `run_id`, and each stream is retained only up to `OUTPUT_CAP_BYTES`
+/// (draining continues past the cap so the child never blocks on a full pipe).
 #[tauri::command]
-pub async fn uv_run_command(
-    command: String,
+pub async fn uv_run_python(
+    code: String,
     project_path: String,
-) -> Result<UvCommandResult, String> {
-    let venv_dir = std::path::Path::new(&project_path).join(".venv");
-
+    run_id: String,
+    timeout_secs: Option<u64>,
+) -> Result<PythonRunResult, String> {
+    let project = std::path::Path::new(&project_path);
+    let venv_dir = project.join(".venv");
     if !venv_dir.exists() {
         return Err("No .venv found. Run setup_project_venv first.".to_string());
     }
 
-    // Split command into program + args
-    let parts: Vec<&str> = command.split_whitespace().collect();
-    if parts.is_empty() {
-        return Err("Empty command".to_string());
-    }
+    let scripts_dir = project.join(".tectonic-editor").join("scripts");
+    std::fs::create_dir_all(&scripts_dir)
+        .map_err(|e| format!("Failed to create scripts directory: {}", e))?;
 
-    let program = parts.first().ok_or("Empty command")?;
-    let args = parts.get(1..).unwrap_or_default();
+    let script_path = scripts_dir.join(format!("{}.py", content_hash(&code)));
+    std::fs::write(&script_path, &code).map_err(|e| format!("Failed to write script: {}", e))?;
 
-    let mut run_cmd = tokio::process::Command::new(program);
-    run_cmd.args(args);
-    run_cmd.current_dir(&project_path);
-    run_cmd.env("VIRTUAL_ENV", &venv_dir);
-    run_cmd.env("PATH", path_with_venv(&venv_dir));
+    let timeout = std::time::Duration::from_secs(
+        timeout_secs
+            .unwrap_or(DEFAULT_RUN_TIMEOUT_SECS)
+            .clamp(1, MAX_RUN_TIMEOUT_SECS),
+    );
+
+    let mut command = tokio::process::Command::new(venv_python(&venv_dir));
+    command
+        .arg(&script_path)
+        .current_dir(project)
+        .env("VIRTUAL_ENV", &venv_dir)
+        .env("PATH", path_with_venv(&venv_dir))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     #[cfg(target_os = "windows")]
     {
-        run_cmd.creation_flags(CREATE_NO_WINDOW);
+        command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = run_cmd
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run command: {}", e))?;
 
-    let exit_code = output.status.code().unwrap_or(-1);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Failed to start Python: {}", e))?;
 
-    Ok(UvCommandResult {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code,
+    let stdout = child.stdout.take().ok_or("no stdout pipe")?;
+    let stderr = child.stderr.take().ok_or("no stderr pipe")?;
+    let out_task = tokio::spawn(read_capped(stdout, OUTPUT_CAP_BYTES));
+    let err_task = tokio::spawn(read_capped(stderr, OUTPUT_CAP_BYTES));
+
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    running_scripts()
+        .lock()
+        .map_err(|_| "run registry poisoned")?
+        .insert(run_id.clone(), cancel_tx);
+
+    let mut timed_out = false;
+    let mut cancelled = false;
+
+    let status = tokio::select! {
+        result = child.wait() => result.map_err(|e| format!("Failed to wait: {}", e))?,
+        _ = tokio::time::sleep(timeout) => {
+            timed_out = true;
+            let _ = child.kill().await;
+            child.wait().await.map_err(|e| format!("Failed to wait after timeout: {}", e))?
+        }
+        _ = cancel_rx => {
+            cancelled = true;
+            let _ = child.kill().await;
+            child.wait().await.map_err(|e| format!("Failed to wait after cancel: {}", e))?
+        }
+    };
+
+    running_scripts()
+        .lock()
+        .map_err(|_| "run registry poisoned")?
+        .remove(&run_id);
+
+    let (stdout_text, out_truncated) = out_task.await.map_err(|e| e.to_string())?;
+    let (stderr_text, err_truncated) = err_task.await.map_err(|e| e.to_string())?;
+
+    Ok(PythonRunResult {
+        stdout: stdout_text,
+        stderr: stderr_text,
+        exit_code: status.code().unwrap_or(-1),
+        timed_out,
+        cancelled,
+        truncated: out_truncated || err_truncated,
+        script_path: script_path.to_string_lossy().to_string(),
     })
+}
+
+/// Kill an in-flight script. Returns false when the id is unknown, which is the
+/// normal outcome for a run that finished between the UI deciding to cancel and
+/// the call arriving.
+#[tauri::command]
+pub fn uv_cancel_python(run_id: String) -> bool {
+    let Ok(mut running) = running_scripts().lock() else {
+        return false;
+    };
+    match running.remove(&run_id) {
+        Some(sender) => sender.send(()).is_ok(),
+        None => false,
+    }
 }

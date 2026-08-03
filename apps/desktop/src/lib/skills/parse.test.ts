@@ -188,6 +188,21 @@ describe("parseSkill", () => {
       expect(result.skill.warnings).toHaveLength(1);
     });
 
+    it("skips a nested block instead of failing the file", () => {
+      // Agent Skills files (agentskills.io) carry a nested `metadata:` map.
+      // Rejecting the whole file over it would make them all unimportable.
+      const result = parse(
+        `---\nname: scientific-writing\ndescription: Draft manuscripts\nlicense: MIT\nmetadata:\n  version: "2.0"\n  skill-author: K-Dense Inc.\n---\nBody.\n`,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.skill.name).toBe("scientific-writing");
+      expect(result.skill.description).toBe("Draft manuscripts");
+      expect(result.skill.warnings).toContain(
+        'nested values under "metadata" ignored',
+      );
+    });
+
     it("warns about unknown fields but still parses", () => {
       const result = parse(
         `---\ndescription: A skill\ntemperature: 0.5\n---\nBody.\n`,

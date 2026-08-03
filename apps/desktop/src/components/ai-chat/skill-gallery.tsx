@@ -10,6 +10,7 @@ import {
   ImportIcon,
   RefreshCwIcon,
   SearchIcon,
+  ShieldAlertIcon,
 } from "lucide-react";
 import {
   Dialog,
@@ -30,7 +31,7 @@ import {
   importSkillFiles,
 } from "@/lib/skills/manage";
 import type { Skill, SkillSource } from "@/lib/skills/types";
-import { rankSkills } from "./skill-picker";
+import { rankSkills, skillCanExecute } from "./skill-picker";
 import { getSkillIcon } from "./skill-icon";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +42,41 @@ const SOURCE_LABELS: Record<SkillSource, string> = {
 };
 
 const SOURCE_ORDER: SkillSource[] = ["project", "user", "builtin"];
+
+// Resizable dialog. Persisted so a size you chose once survives reopening.
+const SIZE_STORAGE_KEY = "tectonic-editor-skill-gallery-size";
+const DEFAULT_SIZE = { width: 960, height: 640 };
+const MIN_SIZE = { width: 560, height: 360 };
+
+function clampToViewport(size: { width: number; height: number }) {
+  return {
+    width: Math.max(
+      MIN_SIZE.width,
+      Math.min(size.width, window.innerWidth - 32),
+    ),
+    height: Math.max(
+      MIN_SIZE.height,
+      Math.min(size.height, window.innerHeight - 32),
+    ),
+  };
+}
+
+function loadSize() {
+  try {
+    const raw = localStorage.getItem(SIZE_STORAGE_KEY);
+    if (!raw) return DEFAULT_SIZE;
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed?.width === "number" &&
+      typeof parsed?.height === "number"
+    ) {
+      return clampToViewport(parsed);
+    }
+  } catch {
+    // Corrupt or unavailable storage — fall back to the default size
+  }
+  return DEFAULT_SIZE;
+}
 
 interface SkillGalleryProps {
   open: boolean;
@@ -59,6 +95,50 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
   const [query, setQuery] = useState("");
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [size, setSize] = useState(DEFAULT_SIZE);
+
+  // Read the stored size when the dialog opens, and re-clamp it: the window may
+  // have been made smaller since, which would otherwise strand the corner grip
+  // off-screen.
+  useEffect(() => {
+    if (open) setSize(clampToViewport(loadSize()));
+  }, [open]);
+
+  const startResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const start = size;
+
+      const onMove = (move: PointerEvent) => {
+        // The dialog is centred with a -50% translate, so it grows from both
+        // edges — a given pointer travel changes each side by half of it.
+        setSize(
+          clampToViewport({
+            width: start.width + (move.clientX - startX) * 2,
+            height: start.height + (move.clientY - startY) * 2,
+          }),
+        );
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        setSize((current) => {
+          try {
+            localStorage.setItem(SIZE_STORAGE_KEY, JSON.stringify(current));
+          } catch {
+            // Storage unavailable — the size still applies for this session
+          }
+          return current;
+        });
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [size],
+  );
 
   const matched = useMemo(() => rankSkills(query, skills), [query, skills]);
   const selected = useMemo(
@@ -157,7 +237,13 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(80vh,620px)] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+      {/* `sm:max-w-*` must be overridden explicitly: DialogContent's own
+          `sm:max-w-lg` is a different Tailwind variant, so `cn` keeps both and
+          the narrower one wins on any screen wider than 640px. */}
+      <DialogContent
+        className="flex max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        style={{ width: size.width, height: size.height }}
+      >
         <DialogHeader className="border-border border-b px-5 py-4">
           <DialogTitle>Skills</DialogTitle>
           <DialogDescription>
@@ -345,6 +431,21 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
                     )}
                   </div>
 
+                  {/* Execution is called out on its own rather than left as one
+                      entry in the tool list: running code is categorically
+                      different from reading files, and this is the screen where
+                      a skill from someone else gets judged. */}
+                  {skillCanExecute(selected) && (
+                    <div className="mt-2 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-amber-700 text-xs dark:text-amber-400">
+                      <ShieldAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+                      <span>
+                        This skill can run Python on your computer. Each script
+                        is shown to you for approval before it runs, and runs
+                        with your account's file and network access.
+                      </span>
+                    </div>
+                  )}
+
                   {selected.warnings.length > 0 && (
                     <ul className="mt-2 space-y-0.5">
                       {selected.warnings.map((w) => (
@@ -402,6 +503,30 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
               </>
             )}
           </div>
+        </div>
+
+        {/* Resize grip. Sits above the dialog's own close button's corner but
+            below it in the stacking order, so both stay clickable. */}
+        <div
+          onPointerDown={startResize}
+          role="separator"
+          aria-label="Resize dialog"
+          className="absolute right-0 bottom-0 z-10 flex size-4 cursor-nwse-resize items-end justify-end p-0.5"
+        >
+          <svg
+            viewBox="0 0 10 10"
+            className="size-2.5 text-muted-foreground/60"
+            aria-hidden="true"
+          >
+            <title>Resize</title>
+            <path
+              d="M9 1 1 9M9 5 5 9"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              fill="none"
+              strokeLinecap="round"
+            />
+          </svg>
         </div>
       </DialogContent>
     </Dialog>

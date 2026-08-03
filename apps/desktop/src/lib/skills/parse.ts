@@ -68,8 +68,11 @@ function parseInlineList(raw: string): string[] {
  */
 function parseFrontmatter(
   block: string,
-): { fields: Map<string, FrontmatterValue> } | { error: string } {
+):
+  | { fields: Map<string, FrontmatterValue>; nestedKeys: string[] }
+  | { error: string } {
   const fields = new Map<string, FrontmatterValue>();
+  const nestedKeys = new Set<string>();
   const lines = block.split(/\r?\n/);
   let lastKey: string | null = null;
 
@@ -90,6 +93,18 @@ function parseFrontmatter(
       } else {
         fields.set(lastKey, [item]);
       }
+      continue;
+    }
+
+    // An indented `key: value` is a nested block (e.g. the `metadata:` map that
+    // Agent Skills files carry). Skills have no nested fields, so the block is
+    // skipped with a warning rather than failing the whole file — otherwise no
+    // real-world SKILL.md would import at all.
+    if (
+      /^[ \t]+/.test(line) &&
+      /^[ \t]*[A-Za-z_][A-Za-z0-9_-]*[ \t]*:/.test(line)
+    ) {
+      if (lastKey) nestedKeys.add(lastKey);
       continue;
     }
 
@@ -115,7 +130,7 @@ function parseFrontmatter(
     fields.set(key, parseScalar(rawValue));
   }
 
-  return { fields };
+  return { fields, nestedKeys: [...nestedKeys] };
 }
 
 /** "fix-build" → "Fix Build" */
@@ -171,6 +186,9 @@ export function parseSkill(raw: string, opts: ParseSkillOptions): ParseResult {
     if (!KNOWN_KEYS.has(key)) {
       warnings.push(`unknown field "${key}" ignored`);
     }
+  }
+  for (const key of parsed.nestedKeys) {
+    warnings.push(`nested values under "${key}" ignored`);
   }
 
   const name = asString(fields.get("name")) ?? opts.fallbackName;

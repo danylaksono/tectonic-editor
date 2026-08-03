@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
-/// Directories that never belong in a shared project archive.
-const EXCLUDED_DIRECTORIES: &[&str] = &[".git", "node_modules"];
+/// Directories that never belong in a shared project archive. `.venv` is here
+/// because a Python environment is large, machine-specific, and rebuildable —
+/// the recipient runs `uv` rather than unpacking the sender's binaries.
+const EXCLUDED_DIRECTORIES: &[&str] = &[".git", "node_modules", ".venv", "venv", "__pycache__"];
 /// The app's private folder is excluded except for compiled artifacts the
 /// reviewer needs (the PDF the annotations were made against, plus SyncTeX
 /// data so "go to source" keeps working on the receiving side).
@@ -199,5 +201,33 @@ mod tests {
             ]
         );
         assert_eq!(result.file_count, 4);
+    }
+
+    #[test]
+    fn omits_python_environments() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        write_file(&root.join("main.tex"), "\\documentclass{article}");
+        write_file(&root.join("analysis.py"), "print('keep me')");
+        // A venv is large, machine-specific and rebuildable — never shipped.
+        write_file(&root.join(".venv/pyvenv.cfg"), "home = /usr/bin");
+        write_file(&root.join(".venv/lib/site-packages/numpy/__init__.py"), "x");
+        write_file(&root.join("__pycache__/analysis.cpython-313.pyc"), "bytes");
+
+        let destination = root.join("export.zip");
+        tauri::async_runtime::block_on(export_project_zip(
+            root.to_string_lossy().to_string(),
+            destination.to_string_lossy().to_string(),
+        ))
+        .unwrap();
+
+        let bytes = fs::read(&destination).unwrap();
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+        // The script is source and stays; the environment it needs does not.
+        assert_eq!(names, vec!["analysis.py", "main.tex"]);
     }
 }

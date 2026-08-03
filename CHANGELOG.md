@@ -4,6 +4,15 @@
 
 ### Added
 
+- The assistant can **run Python** for analysis, computation, and generating
+  figures, using the project's own virtual environment (created on first use).
+  Every script is shown to you in full and runs only when you approve it —
+  re-running the identical script during the same conversation doesn't ask
+  again, but any change to the code does. Scripts are killed after 60 seconds by
+  default, their output is capped, and stopping the chat stops the script.
+  They run with your account's file and network access and are **not**
+  sandboxed, which the approval prompt says plainly. Skills that can run code
+  are flagged in the skill picker and gallery.
 - **Skills** for the AI assistant: reusable working modes you invoke by typing
   `/` in the chat. Five are built in — **Proofread**, **Fix Build**, **Continue
   Writing**, **Explain**, and **Find References** — and a skill stays active for

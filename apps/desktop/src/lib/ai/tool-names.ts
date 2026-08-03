@@ -17,6 +17,14 @@ export const AI_TOOL_NAMES = [
   "search_references",
   "lookup_reference",
   "add_citation",
+  "run_python",
 ] as const;
+
+/**
+ * Tools that do something irreversible or outside the document — a skill
+ * declaring one of these gets a prominent warning in the picker and gallery
+ * rather than being listed as just another entry in a comma-separated list.
+ */
+export const DANGEROUS_TOOL_NAMES: readonly string[] = ["run_python"];
 
 export type AiToolName = (typeof AI_TOOL_NAMES)[number];

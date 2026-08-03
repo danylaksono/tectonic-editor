@@ -1,5 +1,6 @@
 import type { FC, RefObject } from "react";
-import { LibraryIcon } from "lucide-react";
+import { LibraryIcon, ShieldAlertIcon } from "lucide-react";
+import { DANGEROUS_TOOL_NAMES } from "@/lib/ai/tool-names";
 import type { Skill } from "@/lib/skills/types";
 import { fuzzyRank } from "@/lib/fuzzy-search";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,15 @@ import { getSkillIcon } from "./skill-icon";
 export function matchSkillTrigger(value: string): string | null {
   const match = value.match(/^\/([^\s]*)$/);
   return match ? match[1] : null;
+}
+
+/**
+ * True when a skill can do something outside the document — today, run code.
+ * `tools: undefined` means "everything", so an unrestricted skill counts too.
+ */
+export function skillCanExecute(skill: Skill): boolean {
+  if (!skill.tools) return true;
+  return skill.tools.some((t) => DANGEROUS_TOOL_NAMES.includes(t));
 }
 
 /** Rank skills for a `/` query: name and title fuzzily, description by substring. */
@@ -89,6 +99,12 @@ export const SkillPicker: FC<SkillPickerProps> = ({
                       <span className="shrink-0 rounded-sm bg-muted px-1 text-[10px] text-muted-foreground uppercase">
                         {skill.source}
                       </span>
+                    )}
+                    {skillCanExecute(skill) && (
+                      <ShieldAlertIcon
+                        className="size-3 shrink-0 text-amber-600 dark:text-amber-400"
+                        aria-label="Can run code"
+                      />
                     )}
                   </span>
                   <span className="block truncate text-muted-foreground text-xs">

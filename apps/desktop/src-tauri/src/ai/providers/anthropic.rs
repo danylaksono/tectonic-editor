@@ -65,7 +65,7 @@ impl AiProvider for AnthropicProvider {
             "max_tokens": 16000,
             "messages": messages,
             "stream": true,
-            "system": request.system_prompt.unwrap_or_else(|| default_latex_system_prompt()),
+            "system": super::resolve_system_prompt(request.system_prompt, request.skill_prompt),
         });
 
         if let Some(tools) = &request.tools {
@@ -253,8 +253,4 @@ fn anthropic_message_to_json(msg: &AiMessage) -> Option<serde_json::Value> {
         "role": role,
         "content": blocks
     }))
-}
-
-fn default_latex_system_prompt() -> String {
-    super::default_latex_system_prompt()
 }

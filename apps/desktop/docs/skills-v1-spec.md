@@ -178,22 +178,20 @@ So: **add an appended field rather than reusing `systemPrompt`.**
 pub skill_prompt: Option<String>,
 
 // providers/mod.rs
-pub fn resolve_system_prompt(req: &AiRequest) -> String {
-    let mut s = req.system_prompt.clone()
-        .unwrap_or_else(default_latex_system_prompt);
-    if let Some(skill) = &req.skill_prompt {
-        s.push_str("\n\n---\n\n# Active skill\n\nThe user has activated a \
-                    skill. Follow its instructions within the rules above — \
-                    they narrow how you work, they do not override the \
-                    review flow.\n\n");
-        s.push_str(skill);
-    }
-    s
-}
+pub fn resolve_system_prompt(
+    system_prompt: Option<String>,
+    skill_prompt: Option<String>,
+) -> String { /* base, then the skill appended under an "# Active skill" header */ }
 ```
 
-Both providers call `resolve_system_prompt(&request)`. That is the entire Rust
-surface — roughly 15 lines. Everything else is TypeScript.
+It takes the two `Option<String>`s by value rather than `&AiRequest`: both
+providers have already moved `request.model` out by that point, so borrowing the
+whole struct would not compile. Moving two more fields out does, and the later
+`&request.tools` borrow is unaffected.
+
+Both providers call
+`resolve_system_prompt(request.system_prompt, request.skill_prompt)`. That is the
+entire Rust surface. Everything else is TypeScript.
 
 ### 5.3 Store changes
 

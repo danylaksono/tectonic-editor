@@ -31,10 +31,57 @@ export function projectSkillsDir(projectRoot: string): Promise<string> {
   return join(projectRoot, ".tectonic", "skills");
 }
 
+/** Cap on bundled files listed per folder skill — the list goes in the prompt. */
+const MAX_BUNDLED_FILES = 60;
+/** How deep to walk inside a skill folder. */
+const MAX_BUNDLE_DEPTH = 3;
+
 /**
- * Read every `*.md` in one directory. A missing directory is normal (most
- * projects have no skills) and yields an empty result, not an error.
- * Subdirectories are not scanned.
+ * List the files bundled next to a `SKILL.md`, as skill-relative paths. The
+ * result is capped and depth-limited: it is injected into the prompt, and a
+ * skill folder that happens to contain a checkout should not blow up the
+ * context.
+ */
+async function listBundledFiles(skillDir: string): Promise<string[]> {
+  const found: string[] = [];
+
+  async function walk(absolute: string, relative: string, depth: number) {
+    if (depth > MAX_BUNDLE_DEPTH || found.length >= MAX_BUNDLED_FILES) return;
+    let entries: Awaited<ReturnType<typeof readDir>>;
+    try {
+      entries = await readDir(absolute);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= MAX_BUNDLED_FILES) return;
+      if (entry.name.startsWith(".")) continue;
+      const childRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        await walk(await join(absolute, entry.name), childRelative, depth + 1);
+      } else if (entry.isFile && entry.name !== SKILL_FILE_NAME) {
+        found.push(childRelative);
+      }
+    }
+  }
+
+  await walk(skillDir, "", 0);
+  return found.sort();
+}
+
+/** The file that marks a directory as a skill, per the Agent Skills layout. */
+const SKILL_FILE_NAME = "SKILL.md";
+
+/**
+ * Read the skills in one directory. Two layouts are supported:
+ *
+ * - `<name>.md` — a single file.
+ * - `<name>/SKILL.md` — a folder that may also carry `references/`, `scripts/`
+ *   and `assets/`. This is the layout used by the open Agent Skills standard,
+ *   so skills written for other tools can be dropped in as-is.
+ *
+ * A missing directory is normal (most projects have no skills) and yields an
+ * empty result, not an error.
  */
 export async function loadSkillsFromDir(
   dir: string,
@@ -52,10 +99,13 @@ export async function loadSkillsFromDir(
     return { skills, errors };
   }
 
-  for (const entry of entries) {
-    if (!entry.isFile || !entry.name.toLowerCase().endsWith(".md")) continue;
-
-    const path = await join(dir, entry.name);
+  /** Parse one skill file into `skills` or `errors`. */
+  async function ingest(
+    path: string,
+    fileName: string,
+    fallbackName: string,
+    skillDir?: string,
+  ) {
     let raw: string;
     try {
       raw = await readTextFile(path);
@@ -63,27 +113,43 @@ export async function loadSkillsFromDir(
       errors.push({
         source,
         path,
-        fileName: entry.name,
+        fileName,
         message: `could not read file: ${String(err)}`,
       });
+      return;
+    }
+
+    const result = parseSkill(raw, { source, path, fallbackName });
+    if (!result.ok) {
+      errors.push({ source, path, fileName, message: result.message });
+      return;
+    }
+
+    if (skillDir) {
+      result.skill.dir = skillDir;
+      const files = await listBundledFiles(skillDir);
+      if (files.length > 0) result.skill.files = files;
+    }
+    skills.push(result.skill);
+  }
+
+  for (const entry of entries) {
+    if (entry.isFile && entry.name.toLowerCase().endsWith(".md")) {
+      await ingest(
+        await join(dir, entry.name),
+        entry.name,
+        skillNameFromFileName(entry.name),
+      );
       continue;
     }
 
-    const result = parseSkill(raw, {
-      source,
-      path,
-      fallbackName: skillNameFromFileName(entry.name),
-    });
-
-    if (result.ok) {
-      skills.push(result.skill);
-    } else {
-      errors.push({
-        source,
-        path,
-        fileName: entry.name,
-        message: result.message,
-      });
+    if (entry.isDirectory && !entry.name.startsWith(".")) {
+      const skillDir = await join(dir, entry.name);
+      const skillFile = await join(skillDir, SKILL_FILE_NAME);
+      // A directory without SKILL.md is not a skill — skip it silently rather
+      // than reporting an error for, say, a stray `notes/` folder.
+      if (!(await exists(skillFile))) continue;
+      await ingest(skillFile, SKILL_FILE_NAME, entry.name, skillDir);
     }
   }
 

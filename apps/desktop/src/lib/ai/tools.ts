@@ -17,6 +17,11 @@ import {
 } from "@/lib/bibliography-import";
 import { findBibEntries } from "@/lib/bibtex-entries";
 import { usePendingApprovalsStore } from "@/stores/pending-approvals-store";
+import {
+  isProbablyBinary,
+  normalizeSkillRelativePath,
+} from "@/lib/skills/skill-files";
+import type { Skill } from "@/lib/skills/types";
 import { invoke } from "@tauri-apps/api/core";
 import type { AiToolDefinition } from "./types";
 
@@ -284,6 +289,26 @@ export const AI_TOOL_DEFINITIONS: AiToolDefinition[] = [
         },
       },
       required: ["packages", "reason"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_skill_file",
+    description:
+      "Read a file bundled with the active skill, such as a reference " +
+      "document or an example script it tells you to consult. Paths are " +
+      "relative to the skill's own folder and are listed at the end of the " +
+      "skill's instructions. This cannot read project files — use read_file " +
+      "for those.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Skill-relative path, e.g. 'references/style-guide.md'",
+        },
+      },
+      required: ["path"],
       additionalProperties: false,
     },
   },
@@ -677,6 +702,65 @@ async function installPythonPackages(
   }
 }
 
+/** Bundled skill files are read into the prompt, so keep them modest. */
+const MAX_SKILL_FILE_CHARS = 40_000;
+
+/**
+ * Read a file from the active skill's own folder.
+ *
+ * Deliberately not an extension of `read_file`: that is scoped to the project,
+ * this is scoped to one skill directory, and the two should not be able to
+ * reach into each other. The path is normalised rather than merely joined —
+ * a skill body can be authored by anyone, so `../../.ssh/id_rsa` has to fail
+ * here rather than at the filesystem.
+ */
+async function readSkillFile(
+  input: unknown,
+  skill: Skill | undefined,
+): Promise<ToolExecutionResult> {
+  const { path } = (input ?? {}) as { path?: string };
+  if (!path) return err("read_skill_file requires `path`.");
+
+  if (!skill) {
+    return err("No skill is active, so there are no skill files to read.");
+  }
+  if (!skill.dir) {
+    return err(
+      `The "${skill.title}" skill is a single file and has no bundled files.`,
+    );
+  }
+
+  const relative = normalizeSkillRelativePath(path);
+  if (!relative) {
+    return err(
+      `Refused: '${path}' is not a path inside the skill folder. Use a ` +
+        "relative path such as 'references/guide.md'.",
+    );
+  }
+  if (!skill.files?.includes(relative)) {
+    const available = skill.files?.length
+      ? `Available: ${skill.files.join(", ")}`
+      : "This skill bundles no files.";
+    return err(`'${relative}' is not bundled with this skill. ${available}`);
+  }
+  if (isProbablyBinary(relative)) {
+    return err(`'${relative}' is a binary file and cannot be read as text.`);
+  }
+
+  try {
+    const absolute = await join(skill.dir, relative);
+    const content = await readTexFileContent(absolute);
+    if (content.length > MAX_SKILL_FILE_CHARS) {
+      return ok(
+        `${content.slice(0, MAX_SKILL_FILE_CHARS)}\n\n[truncated at ${MAX_SKILL_FILE_CHARS} characters]`,
+      );
+    }
+    return ok(content);
+  } catch (e) {
+    return err(`Could not read '${relative}': ${String(e)}`);
+  }
+}
+
 async function readBuildLog(): Promise<ToolExecutionResult> {
   const state = useDocumentStore.getState();
   if (!state.projectRoot) return err("No project is open.");
@@ -964,10 +1048,21 @@ async function addCitation(
   );
 }
 
+/** Per-call context the tools need but must not reach for themselves. */
+export interface ToolContext {
+  /**
+   * The skill active for this turn. Passed in rather than read from the chat
+   * store: that store imports this module, and `read_skill_file` must be
+   * scoped to the skill that is actually active for the call.
+   */
+  skill?: Skill;
+}
+
 export async function executeAiTool(
   name: string,
   input: unknown,
   toolUseId: string,
+  context: ToolContext = {},
 ): Promise<ToolExecutionResult> {
   try {
     switch (name) {
@@ -995,6 +1090,8 @@ export async function executeAiTool(
         return await runPython(input, toolUseId);
       case "install_python_packages":
         return await installPythonPackages(input, toolUseId);
+      case "read_skill_file":
+        return await readSkillFile(input, context.skill);
       default:
         return err(`Unknown tool: ${name}`);
     }

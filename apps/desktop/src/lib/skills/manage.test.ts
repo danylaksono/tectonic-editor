@@ -3,10 +3,14 @@ import {
   exists,
   mkdir,
   readTextFile,
+  remove,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
 import {
   createSkill,
+  deleteSkill,
+  fallbackNameForPath,
+  saveSkillFile,
   duplicateSkill,
   ensureUserSkillsDir,
   importSkillFiles,
@@ -22,6 +26,7 @@ const mockExists = vi.mocked(exists);
 const mockMkdir = vi.mocked(mkdir);
 const mockWrite = vi.mocked(writeTextFile);
 const mockRead = vi.mocked(readTextFile);
+const mockRemove = vi.mocked(remove);
 
 const DIR = "/home/test/.tectonic/skills";
 
@@ -36,6 +41,7 @@ beforeEach(() => {
   mockExists.mockResolvedValue(false);
   mockWrite.mockResolvedValue();
   mockMkdir.mockResolvedValue();
+  mockRemove.mockResolvedValue();
 });
 
 describe("ensureUserSkillsDir", () => {
@@ -182,5 +188,101 @@ describe("importSkillFiles", () => {
     mockRead.mockRejectedValue(new Error("EACCES"));
     const result = await importSkillFiles(["/d/x.md"], DIR, "user");
     expect(result.rejected[0].message).toMatch(/EACCES/);
+  });
+});
+
+describe("fallbackNameForPath", () => {
+  it("uses the file stem for a single-file skill", () => {
+    expect(fallbackNameForPath(`${DIR}/proofread.md`)).toBe("proofread");
+  });
+
+  it("uses the folder for a SKILL.md, not 'SKILL'", () => {
+    expect(fallbackNameForPath(`${DIR}/scientific-writing/SKILL.md`)).toBe(
+      "scientific-writing",
+    );
+    expect(fallbackNameForPath(`${DIR}/writing/skill.md`)).toBe("writing");
+  });
+
+  it("handles Windows separators", () => {
+    expect(fallbackNameForPath(String.raw`C:\s\writing\SKILL.md`)).toBe(
+      "writing",
+    );
+  });
+});
+
+describe("saveSkillFile", () => {
+  it("overwrites an existing skill in place", async () => {
+    const updated = `---
+description: Now improved
+---
+New body.
+`;
+    const result = await saveSkillFile(`${DIR}/mine.md`, updated, "user");
+    expect(result.name).toBe("mine");
+    expect(mockWrite).toHaveBeenCalledWith(`${DIR}/mine.md`, updated);
+  });
+
+  it("refuses to save an edit that would stop the skill loading", async () => {
+    // Otherwise a stray keystroke in the frontmatter silently removes a skill
+    // the user thinks they still have.
+    await expect(
+      saveSkillFile(`${DIR}/mine.md`, "oops, no frontmatter", "user"),
+    ).rejects.toThrow(/frontmatter/);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps a folder skill named after its folder", async () => {
+    const content = `---
+description: d
+---
+Body.
+`;
+    const result = await saveSkillFile(
+      `${DIR}/scientific-writing/SKILL.md`,
+      content,
+      "user",
+    );
+    expect(result.name).toBe("scientific-writing");
+  });
+});
+
+describe("deleteSkill", () => {
+  const fileSkill: Skill = {
+    name: "mine",
+    title: "Mine",
+    description: "d",
+    body: "b",
+    source: "user",
+    path: `${DIR}/mine.md`,
+    warnings: [],
+  };
+
+  it("removes a single-file skill", async () => {
+    const removed = await deleteSkill(fileSkill);
+    expect(removed).toBe(`${DIR}/mine.md`);
+    expect(mockRemove).toHaveBeenCalledWith(`${DIR}/mine.md`, {
+      recursive: false,
+    });
+  });
+
+  it("removes the whole folder for a folder skill", async () => {
+    // Leaving references/ and scripts/ behind would orphan them: nothing else
+    // reads that directory.
+    const removed = await deleteSkill({
+      ...fileSkill,
+      path: `${DIR}/writing/SKILL.md`,
+      dir: `${DIR}/writing`,
+      files: ["references/guide.md"],
+    });
+    expect(removed).toBe(`${DIR}/writing`);
+    expect(mockRemove).toHaveBeenCalledWith(`${DIR}/writing`, {
+      recursive: true,
+    });
+  });
+
+  it("refuses to delete a built-in", async () => {
+    const builtin = BUILTIN_SKILLS[0];
+    await expect(deleteSkill(builtin)).rejects.toThrow(/built in/);
+    expect(mockRemove).not.toHaveBeenCalled();
   });
 });

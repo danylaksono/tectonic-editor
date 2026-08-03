@@ -1,3 +1,4 @@
+import { RESEARCH_SKILLS } from "./builtin-research";
 import type { Skill } from "./types";
 
 /**
@@ -13,7 +14,7 @@ function builtin(skill: Omit<Skill, "source" | "warnings" | "path">): Skill {
   return { ...skill, source: "builtin", warnings: [] };
 }
 
-export const BUILTIN_SKILLS: Skill[] = [
+const CORE_SKILLS: Skill[] = [
   builtin({
     name: "proofread",
     title: "Proofread",
@@ -137,3 +138,9 @@ export const BUILTIN_SKILLS: Skill[] = [
     ].join("\n"),
   }),
 ];
+
+/**
+ * Everything shipped with the app: the core writing/build modes above, plus the
+ * research-workflow skills adapted from the Agent Skills collection.
+ */
+export const BUILTIN_SKILLS: Skill[] = [...CORE_SKILLS, ...RESEARCH_SKILLS];

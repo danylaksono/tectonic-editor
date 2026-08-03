@@ -17,8 +17,15 @@ reject, one chunk at a time.
 | Location | Applies to | Committed with your project? |
 | --- | --- | --- |
 | Built-in | Always available | — |
-| `~/.tectonic/skills/*.md` | You, in every project | No |
-| `<project>/.tectonic/skills/*.md` | This project | Yes |
+| `~/.tectonic/skills/` | You, in every project | No |
+| `<project>/.tectonic/skills/` | This project | Yes |
+
+Two layouts work in either location:
+
+- **A single file** — `proofread.md`.
+- **A folder** — `proofread/SKILL.md`, which may also carry `references/`,
+  `scripts/` and `assets/`. This is the layout used by the open Agent Skills
+  standard, so a skill written for another tool can be dropped in as-is.
 
 If two skills share a name, the project one wins, then yours, then the built-in.
 The gallery marks a skill that is overriding another.
@@ -90,6 +97,7 @@ the model tries.
 | `add_citation` | Add a resolver-verified `.bib` entry |
 | `run_python` | Run a Python script in the project's environment — **you approve each script before it runs** |
 | `install_python_packages` | Add Python dependencies a script needs — **you approve the exact list every time** |
+| `read_skill_file` | Read a file bundled with the skill itself (folder skills only) |
 
 Two useful shapes:
 
@@ -117,17 +125,48 @@ script means you have read it.
 If a skill does not need to compute anything, leave `run_python` out. Most
 writing skills should.
 
+### Bundled files
+
+A folder skill can ship reference documents and example scripts beside its
+`SKILL.md`. Their paths are appended to the skill's instructions automatically,
+so the assistant knows what exists, and it reads them with `read_skill_file`.
+
+Reads are confined to the skill's own folder: relative paths only, no `..`, no
+absolute paths. `read_skill_file` cannot see project files and `read_file`
+cannot see skill files — the two scopes stay separate.
+
+## What's built in
+
+Eleven skills ship with Opal. Five cover the editor itself — **Proofread**,
+**Fix Build**, **Continue Writing**, **Explain**, **Find References** — and six
+cover research workflow: **Scientific Writing**, **Peer Review**, **Scientific
+Figures**, **Statistical Analysis**, **Literature Review**, and **Research
+Proposals**.
+
+The research set is adapted from the MIT-licensed
+[claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
+collection, rewritten against Opal's own tools. That collection has around 158
+skills, most of them wrappers around a specific Python library. If you want one
+of those, download its folder and use **Import** — the loader understands the
+`SKILL.md` layout they use.
+
 ## Adding a skill
 
 From the gallery (activity rail, the chat drawer's library button, or **Browse
 all skills…** in the `/` picker):
 
-- **New** — writes a starter file you can edit.
+- **New** — opens an editor with a starter template. Set the file name, write
+  the skill, then **Save**. Nothing is written until you save, so cancelling
+  leaves no stray file.
+- **Edit** — opens any of your own skills for editing, right in the gallery.
+  Saving checks the file still parses and refuses with the reason if not, so a
+  slip in the frontmatter cannot silently remove a skill.
+- **Delete** — removes one of your own skills. Click once to arm, once to
+  confirm. For a folder skill the whole folder goes, bundled files included.
 - **Copy to your skills** — duplicates a built-in so you can customise it.
+  Built-ins are read-only, so this is how you change one.
 - **Import** — pick `.md` files from disk.
-- **Open folder** — drop files in yourself.
-
-Then **Reload**, or reopen the project.
+- **Open folder** — drop files in yourself, then **Reload**.
 
 ### Using a skill you found online
 

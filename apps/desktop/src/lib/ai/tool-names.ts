@@ -19,6 +19,7 @@ export const AI_TOOL_NAMES = [
   "add_citation",
   "run_python",
   "install_python_packages",
+  "read_skill_file",
 ] as const;
 
 /**

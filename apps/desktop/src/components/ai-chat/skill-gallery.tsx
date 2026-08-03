@@ -1,6 +1,6 @@
 import { type FC, useCallback, useEffect, useMemo, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { open as openPath } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import {
   AlertTriangleIcon,
@@ -8,9 +8,12 @@ import {
   FilePlusIcon,
   FolderOpenIcon,
   ImportIcon,
+  PencilIcon,
   RefreshCwIcon,
+  SaveIcon,
   SearchIcon,
   ShieldAlertIcon,
+  Trash2Icon,
 } from "lucide-react";
 import {
   Dialog,
@@ -24,12 +27,16 @@ import { useSkillsStore } from "@/stores/skills-store";
 import { useAiChatStore } from "@/stores/ai-chat-store";
 import { useDocumentStore } from "@/stores/document-store";
 import {
-  createSkill,
+  NEW_SKILL_TEMPLATE,
   duplicateSkill,
   ensureProjectSkillsDir,
   ensureUserSkillsDir,
   importSkillFiles,
+  deleteSkill,
+  saveSkillFile,
+  writeSkillFile,
 } from "@/lib/skills/manage";
+import { readTextFile } from "@tauri-apps/plugin-fs";
 import type { Skill, SkillSource } from "@/lib/skills/types";
 import { rankSkills, skillCanExecute } from "./skill-picker";
 import { getSkillIcon } from "./skill-icon";
@@ -96,6 +103,15 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [size, setSize] = useState(DEFAULT_SIZE);
+
+  /** Raw-markdown editor. `path: null` means the file has not been written yet. */
+  const [editor, setEditor] = useState<{
+    path: string | null;
+    source: SkillSource;
+    fileName: string;
+    text: string;
+    error: string | null;
+  } | null>(null);
 
   // Read the stored size when the dialog opens, and re-clamp it: the window may
   // have been made smaller since, which would otherwise strand the corner grip
@@ -171,16 +187,76 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
     [reload],
   );
 
+  // Opens the editor without writing anything: cancelling a new skill should
+  // not leave a stray file behind.
   const handleNew = (source: SkillSource) =>
-    runFileAction("Skill created", async () => {
-      const dir =
-        source === "project" && projectRoot
-          ? await ensureProjectSkillsDir(projectRoot)
-          : await ensureUserSkillsDir();
-      const { path, name } = await createSkill(dir, source);
-      setSelectedName(name);
-      return `${path} — edit it, then reload`;
+    setEditor({
+      path: null,
+      source,
+      fileName: "new-skill",
+      text: NEW_SKILL_TEMPLATE,
+      error: null,
     });
+
+  const handleEdit = async (skill: Skill) => {
+    if (!skill.path) return;
+    setBusy(true);
+    try {
+      const text = await readTextFile(skill.path);
+      setEditor({
+        path: skill.path,
+        source: skill.source,
+        fileName: skill.path.split(/[\\/]/).pop() ?? skill.name,
+        text,
+        error: null,
+      });
+    } catch (err) {
+      toast.error("Could not open the skill file", {
+        description: String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Two-step delete: the second click within the card confirms. */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  useEffect(() => setConfirmDelete(null), [selectedName]);
+
+  const handleDelete = (skill: Skill) =>
+    runFileAction("Skill deleted", async () => {
+      const removed = await deleteSkill(skill);
+      setConfirmDelete(null);
+      setSelectedName(null);
+      return removed;
+    });
+
+  const handleSaveEditor = async () => {
+    if (!editor) return;
+    setBusy(true);
+    try {
+      const result = editor.path
+        ? await saveSkillFile(editor.path, editor.text, editor.source)
+        : await writeSkillFile(
+            editor.source === "project" && projectRoot
+              ? await ensureProjectSkillsDir(projectRoot)
+              : await ensureUserSkillsDir(),
+            editor.fileName,
+            editor.text,
+            editor.source,
+          );
+      await reload();
+      setSelectedName(result.name);
+      setEditor(null);
+      toast.success("Skill saved", { description: result.path });
+    } catch (err) {
+      // Validation failures belong next to the text, not in a toast that
+      // disappears while the user is still fixing the file.
+      setEditor((e) => (e ? { ...e, error: String(err) } : e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleDuplicate = (skill: Skill) =>
     runFileAction("Skill duplicated", async () => {
@@ -221,7 +297,9 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
       const dir = skill?.path
         ? skill.path.replace(/[\\/][^\\/]+$/, "")
         : await ensureUserSkillsDir();
-      await openPath(dir);
+      // Not plugin-shell's `open`: that is scoped to URLs (mailto/tel/http)
+      // and rejects filesystem paths. This command exists for exactly this.
+      await invoke("reveal_in_file_manager", { path: dir });
       return dir;
     });
 
@@ -360,9 +438,83 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
             </div>
           </div>
 
-          {/* Preview */}
+          {/* Preview, or the raw-markdown editor when one is open */}
           <div className="flex min-w-0 flex-1 flex-col">
-            {!selected ? (
+            {editor ? (
+              <>
+                <div className="flex items-center gap-2 border-border border-b px-5 py-3">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-medium text-sm">
+                      {editor.path ? "Edit skill" : "New skill"}
+                    </h3>
+                    {editor.path ? (
+                      <p className="truncate font-mono text-[11px] text-muted-foreground">
+                        {editor.path}
+                      </p>
+                    ) : (
+                      <label className="mt-1 flex items-center gap-1.5 text-muted-foreground text-xs">
+                        File name
+                        <input
+                          value={editor.fileName}
+                          onChange={(e) =>
+                            setEditor((current) =>
+                              current
+                                ? { ...current, fileName: e.target.value }
+                                : current,
+                            )
+                          }
+                          className="w-48 rounded-md border border-input bg-background px-2 py-0.5 font-mono text-foreground text-xs outline-none focus:border-ring"
+                        />
+                        <span>.md</span>
+                      </label>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="h-7"
+                    disabled={busy}
+                    onClick={() => void handleSaveEditor()}
+                  >
+                    <SaveIcon className="size-3.5" /> Save
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7"
+                    disabled={busy}
+                    onClick={() => setEditor(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+
+                {editor.error && (
+                  <div className="mx-5 mt-3 flex items-start gap-1.5 rounded-md border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-destructive text-xs">
+                    <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
+                    <span>{editor.error}</span>
+                  </div>
+                )}
+
+                <textarea
+                  value={editor.text}
+                  onChange={(e) =>
+                    setEditor((current) =>
+                      current
+                        ? { ...current, text: e.target.value, error: null }
+                        : current,
+                    )
+                  }
+                  spellCheck={false}
+                  className="min-h-0 flex-1 resize-none bg-transparent px-5 py-4 font-mono text-xs leading-relaxed outline-none"
+                />
+
+                <div className="border-border border-t px-5 py-2 text-[11px] text-muted-foreground">
+                  The frontmatter block sets the name, description and tools —
+                  see the fields table in the docs. Saving checks the file
+                  parses first.
+                </div>
+              </>
+            ) : !selected ? (
               <div className="flex flex-1 items-center justify-center p-6 text-center text-muted-foreground text-sm">
                 Select a skill to see exactly what it tells the assistant to do.
               </div>
@@ -473,6 +625,41 @@ export const SkillGallery: FC<SkillGalleryProps> = ({ open, onOpenChange }) => {
                 </div>
 
                 <div className="flex items-center gap-1 border-border border-t px-3 py-2">
+                  {selected.path && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={busy}
+                        onClick={() => void handleEdit(selected)}
+                      >
+                        <PencilIcon className="size-3.5" /> Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className={cn(
+                          "h-7 px-2 text-xs",
+                          confirmDelete === selected.name &&
+                            "text-destructive hover:text-destructive",
+                        )}
+                        disabled={busy}
+                        onClick={() =>
+                          confirmDelete === selected.name
+                            ? handleDelete(selected)
+                            : setConfirmDelete(selected.name)
+                        }
+                      >
+                        <Trash2Icon className="size-3.5" />
+                        {confirmDelete === selected.name
+                          ? selected.dir
+                            ? "Delete folder?"
+                            : "Delete?"
+                          : "Delete"}
+                      </Button>
+                    </>
+                  )}
                   <Button
                     variant="ghost"
                     size="sm"

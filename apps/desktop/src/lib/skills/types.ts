@@ -36,8 +36,20 @@ export interface Skill {
   /** The instructions appended to the system prompt. */
   body: string;
   source: SkillSource;
-  /** Absolute path on disk. Undefined for built-ins. */
+  /** Absolute path of the skill file itself. Undefined for built-ins. */
   path?: string;
+  /**
+   * Absolute path of the skill's own folder, for folder-shaped skills
+   * (`<name>/SKILL.md` with `references/`, `scripts/`, `assets/` alongside).
+   * Undefined for a plain `<name>.md`, which has no folder of its own.
+   */
+  dir?: string;
+  /**
+   * Skill-relative paths of the files bundled next to `SKILL.md`. Listed in the
+   * prompt so the assistant knows what it can read, and readable only through
+   * `read_skill_file`.
+   */
+  files?: string[];
   /** Non-fatal problems found while parsing, surfaced in the gallery. */
   warnings: string[];
 }

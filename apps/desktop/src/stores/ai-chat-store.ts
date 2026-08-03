@@ -9,6 +9,7 @@ import { AI_TOOL_DEFINITIONS, executeAiTool } from "@/lib/ai/tools";
 import { useSkillsStore } from "./skills-store";
 import { usePendingApprovalsStore } from "./pending-approvals-store";
 import type { Skill } from "@/lib/skills/types";
+import { bundledFilesSection } from "@/lib/skills/skill-files";
 
 const log = createLogger("ai-chat");
 
@@ -311,6 +312,15 @@ function resolveActiveSkill(tab: TabState | undefined): Skill | undefined {
 }
 
 /**
+ * The prompt text for a skill: its body, plus a manifest of the files bundled
+ * beside it so the assistant knows what `read_skill_file` can reach without
+ * having to guess.
+ */
+function skillPrompt(skill: Skill): string {
+  return skill.body + bundledFilesSection(skill.files ?? []);
+}
+
+/**
  * The tools an active skill permits. A skill may only *narrow* the surface:
  * an absent `tools` list means all tools, and an empty one means none.
  */
@@ -343,7 +353,7 @@ function buildAiRequest(params: {
     messages: params.messages,
     context: params.context,
     // Appended to the base system prompt on the Rust side, never replacing it
-    skillPrompt: skill?.body,
+    skillPrompt: skill ? skillPrompt(skill) : undefined,
     tools: toolsForSkill(skill),
   };
 }
@@ -926,7 +936,9 @@ export const useAiChatStore = create<AiChatState>()((set, get) => ({
         });
         continue;
       }
-      const res = await executeAiTool(call.name!, call.input, call.id!);
+      const res = await executeAiTool(call.name!, call.input, call.id!, {
+        skill: activeSkill,
+      });
       results.push({
         type: "tool_result",
         tool_use_id: call.id!,

@@ -26,6 +26,12 @@
   every call, not merely requested: **Explain** has no editing tools at all and
   cannot change your document even if asked to. Skills never bypass review —
   edits still arrive as diffs you accept or reject.
+- Six research-workflow skills alongside the five editor ones: **Scientific
+  Writing**, **Peer Review**, **Scientific Figures**, **Statistical Analysis**,
+  **Literature Review**, and **Research Proposals**. Adapted from the
+  MIT-licensed claude-scientific-skills collection and rewritten against Opal's
+  own tools — the writing ones cannot run code, and Peer Review cannot reach
+  any network tool, so an unpublished manuscript stays local.
 - A skills gallery, from the activity rail, the chat drawer, or **Browse all
   skills…** in the `/` picker. It shows each skill's full instructions and
   exactly what tools it can reach before you use it, and lists any skill file

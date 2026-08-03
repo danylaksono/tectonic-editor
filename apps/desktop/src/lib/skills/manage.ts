@@ -1,4 +1,9 @@
-import { mkdir, writeTextFile, readTextFile } from "@tauri-apps/plugin-fs";
+import {
+  mkdir,
+  remove,
+  writeTextFile,
+  readTextFile,
+} from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import { exists } from "@/lib/tauri/fs";
 import { parseSkill, skillNameFromFileName } from "./parse";
@@ -101,6 +106,55 @@ export async function createSkill(
   source: SkillSource,
 ): Promise<WriteSkillResult> {
   return writeSkillFile(dir, "new-skill", NEW_SKILL_TEMPLATE, source);
+}
+
+/**
+ * The name a skill file gets when its frontmatter omits `name`. For a folder
+ * skill that is the folder, not "SKILL".
+ */
+export function fallbackNameForPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const fileName = parts[parts.length - 1] ?? "";
+  if (fileName.toLowerCase() === "skill.md") {
+    return parts[parts.length - 2] ?? "skill";
+  }
+  return skillNameFromFileName(fileName);
+}
+
+/**
+ * Delete a skill. For a folder skill the whole folder goes, including its
+ * bundled `references/` and `scripts/` — leaving those behind would orphan
+ * them, since nothing else reads that directory.
+ *
+ * Built-ins have no file and cannot be deleted; the caller must not offer it.
+ */
+export async function deleteSkill(skill: Skill): Promise<string> {
+  if (!skill.path) {
+    throw new Error(`"${skill.title}" is built in and cannot be deleted.`);
+  }
+  const target = skill.dir ?? skill.path;
+  await remove(target, { recursive: Boolean(skill.dir) });
+  return target;
+}
+
+/**
+ * Overwrite an existing skill file. Validates first, so a broken edit is
+ * reported to the user instead of leaving a skill that silently stops loading.
+ */
+export async function saveSkillFile(
+  path: string,
+  content: string,
+  source: SkillSource,
+): Promise<WriteSkillResult> {
+  const parsed = parseSkill(content, {
+    source,
+    path,
+    fallbackName: fallbackNameForPath(path),
+  });
+  if (!parsed.ok) throw new Error(parsed.message);
+
+  await writeTextFile(path, content);
+  return { path, name: parsed.skill.name };
 }
 
 /**

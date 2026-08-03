@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Skills** for the AI assistant: reusable working modes you invoke by typing
+  `/` in the chat. Five are built in — **Proofread**, **Fix Build**, **Continue
+  Writing**, **Explain**, and **Find References** — and a skill stays active for
+  that chat tab until you clear it, so "now do the next chapter" keeps working.
+  A skill can restrict which tools the assistant may use, which is enforced on
+  every call, not merely requested: **Explain** has no editing tools at all and
+  cannot change your document even if asked to. Skills never bypass review —
+  edits still arrive as diffs you accept or reject.
+- A skills gallery, from the activity rail, the chat drawer, or **Browse all
+  skills…** in the `/` picker. It shows each skill's full instructions and
+  exactly what tools it can reach before you use it, and lists any skill file
+  that failed to load with the reason.
+- Your own skills, written as Markdown files with a short frontmatter block, in
+  `~/.tectonic/skills/` (yours everywhere) or `<project>/.tectonic/skills/`
+  (shared with anyone who clones the project). Create one from a template,
+  copy a built-in to customise it, or **Import** a `.md` file you found
+  elsewhere — imports are checked and rejected with a reason rather than
+  copied if they are not valid skills. See
+  [docs/skills.md](apps/desktop/docs/skills.md).
+
 - Citation cards in the PDF. Clicking a citation shows the reference it points
   at — title, authors, year, and venue — with a **DOI** link that opens the
   published record in a browser, **Go to reference** for the jump to the

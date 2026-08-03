@@ -19,6 +19,7 @@ import {
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   PackageIcon,
+  LibraryIcon,
   SearchIcon,
   SettingsIcon,
   CircleHelpIcon,
@@ -204,6 +205,20 @@ function ActivityRail() {
             />
           </Button>
         )}
+        {/* Opens the gallery in the chat drawer rather than a side panel:
+            skills act on the assistant, which lives on the other side. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-9 rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent("open-skill-gallery"))
+          }
+          title="AI skills"
+          aria-label="AI skills"
+        >
+          <LibraryIcon className="size-4" />
+        </Button>
         <AppearancePopover />
         <Button
           variant="ghost"

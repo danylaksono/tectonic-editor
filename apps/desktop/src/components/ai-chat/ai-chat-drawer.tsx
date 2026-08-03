@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 import {
   ChevronDownIcon,
+  LibraryIcon,
   Maximize2Icon,
   MessageCircleIcon,
   Minimize2Icon,
@@ -13,6 +14,7 @@ import { useAiEvents } from "@/hooks/use-ai-events";
 import { ChatMessages } from "./chat-messages";
 import { ChatComposer } from "./chat-composer";
 import { ChatTabBar } from "./chat-tab-bar";
+import { SkillGallery } from "./skill-gallery";
 
 const MIN_HEIGHT = 150;
 const DEFAULT_HEIGHT = 360;
@@ -23,6 +25,15 @@ export function AiChatDrawer() {
 
   const anyStreaming = useAiChatStore((s) => s.tabs.some((t) => t.isStreaming));
   const error = useAiChatStore((s) => s.error);
+
+  // The gallery is opened from here, from the composer's "Browse all skills…"
+  // row, and from the activity rail — all via one window event.
+  const [skillGalleryOpen, setSkillGalleryOpen] = useState(false);
+  useEffect(() => {
+    const handler = () => setSkillGalleryOpen(true);
+    window.addEventListener("open-skill-gallery", handler);
+    return () => window.removeEventListener("open-skill-gallery", handler);
+  }, []);
 
   // Reset the chat session when the project changes so stale messages from a
   // previous project don't leak into the next one. (The chat store is global
@@ -197,6 +208,15 @@ export function AiChatDrawer() {
                 >
                   <Maximize2Icon className="size-4" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setSkillGalleryOpen(true)}
+                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  aria-label="Skills"
+                  title="Skills"
+                >
+                  <LibraryIcon className="size-4" />
+                </button>
               </div>
             </div>
             <ChatTabBar />
@@ -218,6 +238,11 @@ export function AiChatDrawer() {
         {/* Composer */}
         <ChatComposer isOpen={isOpen} />
       </div>
+
+      <SkillGallery
+        open={skillGalleryOpen}
+        onOpenChange={setSkillGalleryOpen}
+      />
     </div>
   );
 }

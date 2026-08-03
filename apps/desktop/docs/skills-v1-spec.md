@@ -1,5 +1,16 @@
 # Skills v1 — Spec
 
+> **Status: implemented.** All seven steps in §8 have shipped. This document is
+> kept as the design record — where it and the code disagree, the code is right.
+> For how to *write* a skill, see [skills.md](skills.md).
+>
+> Deviations from the spec as written, and why, are noted inline: `name` became
+> optional (§1), `resolve_system_prompt` takes owned `Option<String>`s (§5.2),
+> and `lib/ai/tool-names.ts` was added (§5.1). Two things went beyond it:
+> out-of-allowlist tool calls are blocked at execution rather than only omitted
+> from the request, and the gallery gained file management (new / duplicate /
+> import) so skills can be added without leaving the app.
+
 Roadmap item 6. Goal: reusable, user-authored working modes for the AI chat,
 invoked with `/` in the composer, browsable in a gallery, shippable as plain
 Markdown files.

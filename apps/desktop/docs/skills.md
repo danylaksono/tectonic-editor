@@ -1,0 +1,141 @@
+# Writing skills
+
+A **skill** is a reusable working mode for the AI assistant: a Markdown file
+whose instructions are added to the assistant's prompt while the skill is
+active, plus a little metadata.
+
+Type `/` at the start of the chat box to pick one. The active skill stays on for
+that chat tab until you clear it, so a follow-up like "now the next chapter"
+still works. Clear it with the `x` on the chip next to the model picker.
+
+A skill is text, not code. It cannot edit your document by itself and it cannot
+bypass review — the assistant's edits still arrive as diffs you accept or
+reject, one chunk at a time.
+
+## Where skills live
+
+| Location | Applies to | Committed with your project? |
+| --- | --- | --- |
+| Built-in | Always available | — |
+| `~/.tectonic/skills/*.md` | You, in every project | No |
+| `<project>/.tectonic/skills/*.md` | This project | Yes |
+
+If two skills share a name, the project one wins, then yours, then the built-in.
+The gallery marks a skill that is overriding another.
+
+`.tectonic/` is not the same directory as `.tectonic-editor/`. The latter holds
+machine-local state (build cache, version history), is gitignored, and is
+stripped from exported archives — skills go in `.tectonic/` so that cloning the
+project brings them along.
+
+## File format
+
+````markdown
+---
+description: Fix grammar, spelling and style without changing meaning
+icon: spell-check
+tools: [read_file, search_project, propose_edit]
+---
+
+You are proofreading the user's LaTeX prose.
+
+- Do not change the meaning, the argument, or the author's voice.
+- Do not restructure sections, and do not touch the preamble.
+- Propose one edit per paragraph you change, so each can be accepted
+  or rejected independently.
+- Leave `\cite`, `\ref`, and all math untouched.
+````
+
+Everything after the closing `---` is the instruction body, and it is the whole
+point of the file — write it as if briefing a careful collaborator.
+
+### Fields
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `description` | **yes** | One line, shown in the picker and gallery |
+| `name` | no | The `/name` you type. Defaults to the filename, so `proofread.md` needs no `name:` |
+| `title` | no | Display name. Defaults to the name prettified (`fix-build` → "Fix Build") |
+| `icon` | no | One of `spell-check`, `wrench`, `pen-line`, `help-circle`, `book-marked`, `sparkles` |
+| `tools` | no | Which tools the assistant may use. Omit for all of them |
+| `model` | no | Model to switch to when the skill is activated. You can still change it |
+
+Names are lowercase kebab-case (`fix-build`). Values may be quoted; `#` starts a
+comment unless the value is quoted. Lists work inline (`[a, b]`) or as a block:
+
+```yaml
+tools:
+  - read_file
+  - propose_edit
+```
+
+### Restricting tools
+
+`tools:` is an allowlist — a skill can only ever *narrow* what the assistant can
+do, never widen it. Calls to anything outside the list are blocked when they are
+attempted, not merely omitted from the request, so the restriction holds even if
+the model tries.
+
+| Tool | What it does |
+| --- | --- |
+| `list_files` | List the project's files |
+| `read_file` | Read a file, including unsaved edits |
+| `search_project` | Search all text files |
+| `propose_edit` | Propose a change for you to review |
+| `compile_document` | Compile and report the result |
+| `read_build_log` | Read the full engine log |
+| `check_citations` | Cross-check `\cite` keys against `.bib` entries |
+| `search_references` | Search for a reference by title/author/year |
+| `lookup_reference` | Verify a DOI, arXiv ID, or ISBN |
+| `add_citation` | Add a resolver-verified `.bib` entry |
+
+Two useful shapes:
+
+- **Read-only advice:** `tools: [read_file, search_project, list_files]` — no
+  `propose_edit`, so the skill cannot change anything. This is how the built-in
+  **Explain** works.
+- **No tools at all:** `tools: []` — chat replies only.
+
+A `tools:` list naming only unknown tools resolves to *no* tools rather than all
+of them: a typo must never quietly widen a skill's reach. The gallery shows a
+warning when this happens.
+
+## Adding a skill
+
+From the gallery (activity rail, the chat drawer's library button, or **Browse
+all skills…** in the `/` picker):
+
+- **New** — writes a starter file you can edit.
+- **Copy to your skills** — duplicates a built-in so you can customise it.
+- **Import** — pick `.md` files from disk.
+- **Open folder** — drop files in yourself.
+
+Then **Reload**, or reopen the project.
+
+### Using a skill you found online
+
+Download the `.md` file, then **Import** it. Read the instructions in the
+gallery's preview before you use it — that is what the preview is for.
+
+There is deliberately no install-from-URL. A skill body is instructions given to
+an assistant holding editing and citation tools, so a one-click install from a
+link is not a step worth having; downloading and looking at the file first is.
+Import checks that a file really is a skill and refuses it with a reason rather
+than copying it, so a stray README cannot end up in your skills folder.
+
+What a hostile skill cannot do: run code, edit files without your review, or
+grant itself tools. What it could still try: talk the assistant into proposing
+changes you did not ask for. Reading diffs before accepting them is the
+protection — as it is for everything else the assistant proposes.
+
+## Troubleshooting
+
+**My skill does not appear.** Press **Reload** in the gallery. If the file
+failed to parse it is listed under **Not loaded** with the reason — a missing
+`description`, an empty body, or a line the parser could not read.
+
+**The chip says "(missing)".** The active skill's file was deleted or renamed.
+Messages are being sent as ordinary chat. Clear the chip or reload.
+
+**`/` does not open the picker.** It only triggers at the very start of an empty
+message, with no spaces yet — otherwise every slash in your LaTeX would open it.

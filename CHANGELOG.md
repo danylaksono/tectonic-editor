@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.4.8] - 2026-08-05
+
+Opal 1.4.8 makes the assistant something you can direct rather than just talk
+to: skills you invoke with `/`, each with its own instructions and its own
+limits on which tools it may touch, plus the ability to run Python for analysis
+and figures under your approval. Alongside that, citations become clickable in
+the compiled PDF, the PDF pane gains back/forward navigation, and the editor
+points out the LaTeX habits that quietly turn into typographic mistakes.
+
 ### Added
 
 - **Style suggestions** while you write: straight quotes that would come out as

@@ -60,6 +60,11 @@ interface SettingsState {
   /** Run tex-fmt on the active .tex file when saving with Ctrl+S. */
   formatLatexOnSave: boolean;
   setFormatLatexOnSave: (enabled: boolean) => void;
+  /** Typography and modern-command suggestions (straight quotes, "..." for
+   *  \dots, $$…$$, plain-TeX font switches). Advisory only — they show up as
+   *  info markers and never block a compile. */
+  latexStyleHints: boolean;
+  setLatexStyleHints: (enabled: boolean) => void;
   /** Last-used PDF review highlighter colour (token, not hex — see
    *  REVIEW_HIGHLIGHT_COLORS). Each annotation stores its own colour; this is
    *  just the default for the next highlight. */
@@ -108,6 +113,8 @@ export const useSettingsStore = create<SettingsState>()(
       setReviewerName: (name) => set({ reviewerName: name.trim() }),
       formatLatexOnSave: true,
       setFormatLatexOnSave: (enabled) => set({ formatLatexOnSave: enabled }),
+      latexStyleHints: true,
+      setLatexStyleHints: (enabled) => set({ latexStyleHints: enabled }),
       reviewHighlightColor: "yellow",
       setReviewHighlightColor: (color) => set({ reviewHighlightColor: color }),
       simplePdfPreview: false,
@@ -145,6 +152,9 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (s && typeof s.formatLatexOnSave !== "boolean") {
           s.formatLatexOnSave = true;
+        }
+        if (s && typeof s.latexStyleHints !== "boolean") {
+          s.latexStyleHints = true;
         }
         if (s && typeof s.reviewHighlightColor !== "string") {
           s.reviewHighlightColor = "yellow";

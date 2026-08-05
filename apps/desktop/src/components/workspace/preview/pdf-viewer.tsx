@@ -21,6 +21,18 @@ import {
 } from "@/lib/mupdf/pdf-doc-cache";
 import { LOCAL_ZOOM_SHORTCUTS_ATTR } from "@/lib/app-zoom";
 import { MupdfPage, type MupdfReviewAnnotation } from "./mupdf-page";
+import { CitationCard } from "./citation-card";
+import { useCitationPopup } from "@/hooks/use-citation-popup";
+import {
+  canGoBack,
+  canGoForward,
+  EMPTY_HISTORY,
+  goBack,
+  goForward,
+  recordJump,
+  updateCurrent,
+  type ViewHistory,
+} from "@/lib/pdf-view-history";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
 import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
@@ -86,6 +98,16 @@ export interface PdfReviewTarget {
   selectedText: string;
 }
 
+export interface PdfViewHistoryState {
+  canGoBack: boolean;
+  canGoForward: boolean;
+}
+
+export interface PdfViewHistoryControls {
+  back: () => void;
+  forward: () => void;
+}
+
 interface PdfContextTarget {
   page: number;
   x: number;
@@ -111,7 +133,17 @@ interface PdfViewerProps {
   onFirstPageSize?: (width: number, height: number) => void;
   onContainerResize?: (width: number, height: number) => void;
   onCurrentPageChange?: (page: number) => void;
-  scrollToPageRef?: React.RefObject<((page: number) => void) | null>;
+  /** Jump to a page. Pass `record` for jumps that should be undoable with the
+   *  back button — following a link or a table-of-contents entry — but not for
+   *  stepping page by page, which is closer to scrolling. */
+  scrollToPageRef?: React.RefObject<
+    ((page: number, options?: { record?: boolean }) => void) | null
+  >;
+  /** Browser-style back/forward through jump positions. */
+  viewHistoryRef?: React.RefObject<PdfViewHistoryControls | null>;
+  onViewHistoryChange?: (state: PdfViewHistoryState) => void;
+  /** Open a bibliography entry's source in the editor, from a citation card. */
+  onOpenBibEntry?: (fileId: string, from: number) => void;
   captureMode?: boolean;
   onCapture?: (result: CaptureResult) => void;
   onCancelCapture?: () => void;
@@ -152,6 +184,9 @@ export function PdfViewer({
   onContainerResize,
   onCurrentPageChange,
   scrollToPageRef,
+  viewHistoryRef,
+  onViewHistoryChange,
+  onOpenBibEntry,
   captureMode = false,
   onCapture,
   onCancelCapture,
@@ -258,6 +293,37 @@ export function PdfViewer({
 
   const numPages = pageSizes.length;
 
+  // Back/forward history. Kept in a ref because ordinary scrolling updates the
+  // current entry continuously; only the button states are React state.
+  const historyRef = useRef<ViewHistory>(EMPTY_HISTORY);
+  const [historyState, setHistoryState] = useState<PdfViewHistoryState>({
+    canGoBack: false,
+    canGoForward: false,
+  });
+
+  const syncHistoryState = useCallback(() => {
+    const history = historyRef.current;
+    const next = {
+      canGoBack: canGoBack(history),
+      canGoForward: canGoForward(history),
+    };
+    setHistoryState((current) =>
+      current.canGoBack === next.canGoBack &&
+      current.canGoForward === next.canGoForward
+        ? current
+        : next,
+    );
+  }, []);
+
+  /** Note a jump away from the current position so it can be returned to. */
+  const recordHistoryJump = useCallback(
+    (from: number, to: number) => {
+      historyRef.current = recordJump(historyRef.current, from, to);
+      syncHistoryState();
+    },
+    [syncHistoryState],
+  );
+
   const openPdfHref = useCallback((href: string) => {
     const container = containerRef.current;
     if (!container) return;
@@ -266,7 +332,7 @@ export function PdfViewer({
       const match = href.match(/#page=(\d+)/);
       if (match) {
         const pageNum = parseInt(match[1], 10);
-        scrollToPage(container, pageNum);
+        scrollToPage(container, pageNum, true);
       }
       return;
     }
@@ -303,15 +369,22 @@ export function PdfViewer({
     return 1;
   }
 
-  /** Scroll the container so the given page is at the top (with 16px offset). */
-  function scrollToPage(container: HTMLElement, page: number): boolean {
+  /** Scroll the container so the given page is at the top (with 16px offset).
+   *  Pass `record` for jumps the back button should be able to undo. */
+  function scrollToPage(
+    container: HTMLElement,
+    page: number,
+    record = false,
+  ): boolean {
     const pageEl = container.querySelector(
       `[data-page-number="${page}"]`,
     ) as HTMLElement | null;
     if (!pageEl) return false;
     const containerRect = container.getBoundingClientRect();
     const pageRect = pageEl.getBoundingClientRect();
+    const from = container.scrollTop;
     container.scrollTop += pageRect.top - containerRect.top - 16;
+    if (record) recordHistoryJump(from, container.scrollTop);
     return true;
   }
 
@@ -697,14 +770,80 @@ export function PdfViewer({
   // Expose scrollToPage via ref
   useEffect(() => {
     if (!scrollToPageRef) return;
-    scrollToPageRef.current = (page: number) => {
+    scrollToPageRef.current = (
+      page: number,
+      options?: { record?: boolean },
+    ) => {
       const container = containerRef.current;
-      if (container) scrollToPage(container, page);
+      if (container) scrollToPage(container, page, options?.record ?? false);
     };
     return () => {
       if (scrollToPageRef) scrollToPageRef.current = null;
     };
   }, [scrollToPageRef, pageSizes]);
+
+  // Keep the current history entry in step with ordinary scrolling, so going
+  // back returns to where the reader actually was rather than where the last
+  // jump happened to land.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !isActive) return;
+
+    let rafId = 0;
+    const handleScroll = () => {
+      if (rafId !== 0) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        historyRef.current = updateCurrent(
+          historyRef.current,
+          container.scrollTop,
+        );
+      });
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      if (rafId !== 0) cancelAnimationFrame(rafId);
+    };
+  }, [isActive]);
+
+  const navigateHistory = useCallback(
+    (direction: "back" | "forward") => {
+      const container = containerRef.current;
+      if (!container) return;
+      const step = (direction === "back" ? goBack : goForward)(
+        historyRef.current,
+      );
+      if (!step) return;
+      historyRef.current = step.history;
+      container.scrollTop = step.target;
+      syncHistoryState();
+    },
+    [syncHistoryState],
+  );
+
+  // Expose back/forward, and report their availability to the toolbar.
+  useEffect(() => {
+    if (!viewHistoryRef) return;
+    viewHistoryRef.current = {
+      back: () => navigateHistory("back"),
+      forward: () => navigateHistory("forward"),
+    };
+    return () => {
+      if (viewHistoryRef) viewHistoryRef.current = null;
+    };
+  }, [viewHistoryRef, navigateHistory]);
+
+  useEffect(() => {
+    onViewHistoryChange?.(historyState);
+  }, [historyState, onViewHistoryChange]);
+
+  // Switching to another document invalidates every recorded offset.
+  useEffect(() => {
+    historyRef.current = EMPTY_HISTORY;
+    syncHistoryState();
+  }, [rootFileId, syncHistoryState]);
 
   // Forward SyncTeX: center the resolved point, not merely the page, so a
   // location near the bottom of a long page is immediately visible.
@@ -953,6 +1092,12 @@ export function PdfViewer({
     return () => container.removeEventListener("keydown", handleKeyDown);
   }, [scale, onScaleChange]);
 
+  // The reference card opened by clicking a citation. Held in a ref as well so
+  // the click interceptor below can reach it without re-subscribing.
+  const citationPopup = useCitationPopup(containerRef);
+  const citationPopupRef = useRef(citationPopup);
+  citationPopupRef.current = citationPopup;
+
   // Intercept link clicks
   useEffect(() => {
     const container = containerRef.current;
@@ -964,9 +1109,19 @@ export function PdfViewer({
       if (!anchor) return;
       if (!anchor.closest(".mupdf-link-layer")) return;
 
+      // Stopping propagation here also keeps this click from reaching the
+      // card's own dismiss-on-outside-click listener on the document.
       e.preventDefault();
       e.stopPropagation();
 
+      // A citation shows its reference instead of jumping straight to the
+      // bibliography; the card offers the jump as one of its actions.
+      if (anchor.dataset.citeKey) {
+        citationPopupRef.current.openForAnchor(anchor);
+        return;
+      }
+
+      citationPopupRef.current.close();
       const href = anchor.getAttribute("href");
       if (!href) return;
 
@@ -1245,9 +1400,18 @@ export function PdfViewer({
       if (event.key === "Escape" && searchOpen) {
         event.preventDefault();
         closeSearch();
+        return;
+      }
+      // Alt+Arrow is the browser convention for back and forward.
+      if (
+        event.altKey &&
+        (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      ) {
+        event.preventDefault();
+        navigateHistory(event.key === "ArrowLeft" ? "back" : "forward");
       }
     },
-    [openSearch, closeSearch, searchOpen],
+    [openSearch, closeSearch, searchOpen, navigateHistory],
   );
 
   return (
@@ -1396,6 +1560,35 @@ export function PdfViewer({
           )}
         </ContextMenuContent>
       </ContextMenu>
+
+      {citationPopup.open && (
+        <CitationCard
+          preview={citationPopup.open.preview}
+          anchorRect={citationPopup.open.rect}
+          onGoToReference={
+            citationPopup.open.href?.includes("#page=")
+              ? () => {
+                  const href = citationPopup.open?.href;
+                  citationPopup.close();
+                  if (href) openPdfHref(href);
+                }
+              : undefined
+          }
+          onEditEntry={
+            onOpenBibEntry && citationPopup.open.preview.entry
+              ? () => {
+                  const entry = citationPopup.open?.preview.entry;
+                  citationPopup.close();
+                  if (entry) onOpenBibEntry(entry.fileId, entry.from);
+                }
+              : undefined
+          }
+          onOpenLink={(url) => {
+            citationPopup.close();
+            openPdfHref(url);
+          }}
+        />
+      )}
 
       {searchOpen && (
         <div className="absolute top-2 right-4 z-20 flex items-center gap-1 rounded-md border border-border bg-popover/95 p-1 shadow-md backdrop-blur">

@@ -150,6 +150,7 @@ import { toast } from "sonner";
 import { semanticCompletionSource } from "@/lib/semantic/completion-source";
 import { latexTabCompletion } from "@/lib/latex-inline-completion";
 import { applyFormattedText, formatLatexSource } from "@/lib/latex-format";
+import { findStyleIssues } from "@/lib/latex-style";
 import { sourceLensExtension } from "@/lib/source-lens";
 import { defaultWorkspaceMode, useLensStore } from "@/stores/lens-store";
 import { usePreviewStore } from "@/stores/preview-store";
@@ -361,6 +362,29 @@ const editorStateCache = new Map<
 /** Clear editor state cache (e.g., on project close). */
 export function clearEditorStateCache(): void {
   editorStateCache.clear();
+}
+
+/** Style suggestions as diagnostics. Advisory, so they use "info" severity and
+ *  stay out of the Problems panel's error/warning counts; where the rule found
+ *  an unambiguous rewrite, the action applies the exact edits it computed. */
+function styleDiagnostics(source: string): Diagnostic[] {
+  return findStyleIssues(source).map((issue) => ({
+    from: issue.from,
+    to: issue.to,
+    severity: "info" as const,
+    source: "style",
+    message: issue.message,
+    actions: issue.fix
+      ? [
+          {
+            name: issue.fix.label,
+            apply: (view: EditorView) => {
+              view.dispatch({ changes: issue.fix?.edits ?? [] });
+            },
+          },
+        ]
+      : [],
+  }));
 }
 
 /** Editor text size, swapped via compartment so changes don't rebuild the editor. */
@@ -1820,6 +1844,9 @@ export function LatexEditor() {
                   ...citationDiagnostics,
                   ...referenceDiagnostics,
                   ...packageDiagnostics,
+                  ...(useSettingsStore.getState().latexStyleHints
+                    ? styleDiagnostics(view.state.doc.toString())
+                    : []),
                 ];
               }),
               lintGutter(),

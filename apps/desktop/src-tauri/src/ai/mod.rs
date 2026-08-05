@@ -89,6 +89,11 @@ pub struct AiRequest {
     pub prompt: String,
     pub model: Option<String>,
     pub system_prompt: Option<String>,
+    /// Body of the skill the user has activated for this chat tab, if any.
+    /// Appended to the system prompt rather than replacing it — see
+    /// `providers::resolve_system_prompt`.
+    #[serde(default)]
+    pub skill_prompt: Option<String>,
     pub messages: Vec<AiMessage>,
     pub context: Option<AiContext>,
     #[serde(default)]

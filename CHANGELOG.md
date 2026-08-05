@@ -2,6 +2,82 @@
 
 ## [Unreleased]
 
+## [1.4.8] - 2026-08-05
+
+Opal 1.4.8 makes the assistant something you can direct rather than just talk
+to: skills you invoke with `/`, each with its own instructions and its own
+limits on which tools it may touch, plus the ability to run Python for analysis
+and figures under your approval. Alongside that, citations become clickable in
+the compiled PDF, the PDF pane gains back/forward navigation, and the editor
+points out the LaTeX habits that quietly turn into typographic mistakes.
+
+### Added
+
+- **Style suggestions** while you write: straight quotes that would come out as
+  `”text”`, `...` where LaTeX wants `\dots`, `$$…$$` instead of `\[…\]`,
+  plain-TeX font switches like `\bf`, `eqnarray`, a heading level skipped in the
+  table of contents, and a missing `~` in `Figure \ref{...}` so a reference can
+  never start a line. They appear as blue hints, never errors, and most carry a
+  one-click fix. Nothing fires inside comments, verbatim blocks, math, URLs, or
+  file paths, where that punctuation is deliberate. Turn the whole set off in
+  Settings → Editor → Style suggestions.
+- The assistant can **run Python** for analysis, computation, and generating
+  figures, using the project's own virtual environment (created on first use).
+  Every script is shown to you in full and runs only when you approve it —
+  re-running the identical script during the same conversation doesn't ask
+  again, but any change to the code does. Scripts are killed after 60 seconds by
+  default, their output is capped, and stopping the chat stops the script.
+  They run with your account's file and network access and are **not**
+  sandboxed, which the approval prompt says plainly. Skills that can run code
+  are flagged in the skill picker and gallery.
+- The assistant can **add Python packages** a script needs. You see the exact
+  list and approve it every time — this one is never skipped, because a
+  mistyped package name looks perfectly ordinary and cannot be judged by
+  reading it. Only package names and version specifiers are accepted; flags,
+  paths, and URLs are refused.
+- **Skills** for the AI assistant: reusable working modes you invoke by typing
+  `/` in the chat. Five are built in — **Proofread**, **Fix Build**, **Continue
+  Writing**, **Explain**, and **Find References** — and a skill stays active for
+  that chat tab until you clear it, so "now do the next chapter" keeps working.
+  A skill can restrict which tools the assistant may use, which is enforced on
+  every call, not merely requested: **Explain** has no editing tools at all and
+  cannot change your document even if asked to. Skills never bypass review —
+  edits still arrive as diffs you accept or reject.
+- Six research-workflow skills alongside the five editor ones: **Scientific
+  Writing**, **Peer Review**, **Scientific Figures**, **Statistical Analysis**,
+  **Literature Review**, and **Research Proposals**. Adapted from the
+  MIT-licensed claude-scientific-skills collection and rewritten against Opal's
+  own tools — the writing ones cannot run code, and Peer Review cannot reach
+  any network tool, so an unpublished manuscript stays local.
+- A skills gallery, from the activity rail, the chat drawer, or **Browse all
+  skills…** in the `/` picker. It shows each skill's full instructions and
+  exactly what tools it can reach before you use it, and lists any skill file
+  that failed to load with the reason.
+- Your own skills, written as Markdown files with a short frontmatter block, in
+  `~/.tectonic/skills/` (yours everywhere) or `<project>/.tectonic/skills/`
+  (shared with anyone who clones the project). Create one from a template,
+  copy a built-in to customise it, or **Import** a `.md` file you found
+  elsewhere — imports are checked and rejected with a reason rather than
+  copied if they are not valid skills. See
+  [docs/skills.md](apps/desktop/docs/skills.md).
+
+- Citation cards in the PDF. Clicking a citation shows the reference it points
+  at — title, authors, year, and venue — with a **DOI** link that opens the
+  published record in a browser, **Go to reference** for the jump to the
+  bibliography that clicking a citation used to perform, and **Edit entry** to
+  open the entry's own `.bib` source in the editor. The card stays up
+  until you click elsewhere or press `Esc`. Keys with no matching entry are
+  named as such, which makes a stale citation visible while reading or
+  reviewing. Requires the `hyperref` package, which links citations in the
+  compiled PDF. References are read from the project's `.bib` files, or from a
+  `thebibliography` environment when the document has no `.bib` file.
+- Back and forward navigation in the PDF pane (`Alt` + `Left` / `Right`, or the
+  arrows on the PDF toolbar), which return you to where a jump started. Reading
+  position is restored, not just the page. Following a citation to the
+  bibliography, opening an outline entry, and typing a page number are all
+  undoable this way; stepping page by page is not, since that is closer to
+  scrolling.
+
 ## [1.4.7] - 2026-07-30
 
 Opal 1.4.7 is an urgent fix for runaway memory growth that could crash the app

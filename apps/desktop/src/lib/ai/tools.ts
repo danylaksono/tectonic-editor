@@ -16,6 +16,13 @@ import {
   type CitationCandidate,
 } from "@/lib/bibliography-import";
 import { findBibEntries } from "@/lib/bibtex-entries";
+import { usePendingApprovalsStore } from "@/stores/pending-approvals-store";
+import {
+  isProbablyBinary,
+  normalizeSkillRelativePath,
+} from "@/lib/skills/skill-files";
+import type { Skill } from "@/lib/skills/types";
+import { invoke } from "@tauri-apps/api/core";
 import type { AiToolDefinition } from "./types";
 
 /**
@@ -227,7 +234,95 @@ export const AI_TOOL_DEFINITIONS: AiToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "run_python",
+    description:
+      "Run a Python script in the project's virtual environment and return " +
+      "its output. Use it for analysis, computation, and generating figures " +
+      "to include in the document. The user is shown the code and must " +
+      "approve it before it runs — say what the script will do before " +
+      "calling this. Scripts run with the user's own file and network " +
+      "access, so keep them minimal and never destructive. The working " +
+      "directory is the project root, so write figures to 'figures/'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          description: "The complete Python script to run.",
+        },
+        description: {
+          type: "string",
+          description:
+            "One line, shown to the user in the approval prompt, e.g. " +
+            "'Plot the convergence data from results.csv'.",
+        },
+        timeout_secs: {
+          type: "number",
+          description: "Optional wall-clock limit, default 60, maximum 600.",
+        },
+      },
+      required: ["code", "description"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "install_python_packages",
+    description:
+      "Install Python packages into the project's environment so a script " +
+      "can import them. Use only package names and version specifiers " +
+      "(e.g. 'numpy', 'pandas>=2.0') — flags, paths and URLs are refused. " +
+      "The user approves the exact list before anything is installed, and " +
+      "is always asked, so install only what the task needs and say why.",
+    input_schema: {
+      type: "object",
+      properties: {
+        packages: {
+          type: "array",
+          items: { type: "string" },
+          description: "Requirement specifiers, e.g. ['numpy', 'pandas>=2.0']",
+        },
+        reason: {
+          type: "string",
+          description:
+            "One line the user sees, e.g. 'Needed to read the results spreadsheet'.",
+        },
+      },
+      required: ["packages", "reason"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_skill_file",
+    description:
+      "Read a file bundled with the active skill, such as a reference " +
+      "document or an example script it tells you to consult. Paths are " +
+      "relative to the skill's own folder and are listed at the end of the " +
+      "skill's instructions. This cannot read project files — use read_file " +
+      "for those.",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Skill-relative path, e.g. 'references/style-guide.md'",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
 ];
+
+interface PythonRunResult {
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  timed_out: boolean;
+  cancelled: boolean;
+  truncated: boolean;
+  script_path: string;
+}
 
 export interface ToolExecutionResult {
   content: string;
@@ -435,6 +530,234 @@ async function compileDocument(): Promise<ToolExecutionResult> {
     );
   } finally {
     useDocumentStore.getState().setIsCompiling(false);
+  }
+}
+
+/**
+ * Run a Python script, gated on the user's approval.
+ *
+ * Unlike `propose_edit`, this waits: the model needs the script's output to
+ * carry on, so the tool call blocks until the user decides. `pending-scripts-
+ * store` handles the waiting, the session-level "already approved this exact
+ * code" shortcut, and the timeout.
+ */
+async function runPython(
+  input: unknown,
+  toolUseId: string,
+): Promise<ToolExecutionResult> {
+  const { code, description, timeout_secs } = (input ?? {}) as {
+    code?: string;
+    description?: string;
+    timeout_secs?: number;
+  };
+
+  if (!code?.trim()) return err("run_python requires `code`.");
+  if (!description?.trim()) {
+    return err(
+      "run_python requires `description` — the user sees it when deciding whether to run the script.",
+    );
+  }
+
+  const projectPath = useDocumentStore.getState().projectRoot;
+  if (!projectPath) return err("No project is open.");
+
+  const decision = await usePendingApprovalsStore.getState().request({
+    kind: "script",
+    id: toolUseId,
+    code,
+    description,
+    createdAt: Date.now(),
+  });
+
+  if (decision === "rejected") {
+    return err(
+      "The user declined to run this script. Do not run it again unchanged — ask what they would prefer.",
+    );
+  }
+  if (decision === "timeout") {
+    return err(
+      "The user did not respond to the approval prompt. The script did not run.",
+    );
+  }
+
+  // Approved. Create the environment on first use rather than making the user
+  // find a setting — it is excluded from history and export, so it costs
+  // nothing but disk.
+  try {
+    await invoke("setup_project_venv", { projectPath });
+  } catch (e) {
+    return err(
+      `Python environment could not be prepared: ${String(e)}. ` +
+        "Ask the user to check that uv is installed (Settings → Python).",
+    );
+  }
+
+  let result: PythonRunResult;
+  try {
+    result = await invoke<PythonRunResult>("uv_run_python", {
+      code,
+      projectPath,
+      runId: toolUseId,
+      timeoutSecs: timeout_secs,
+    });
+  } catch (e) {
+    return err(`Failed to run the script: ${String(e)}`);
+  }
+
+  const parts: string[] = [];
+  if (result.timed_out) {
+    parts.push(
+      "The script was killed for exceeding its time limit. Its output up to that point:",
+    );
+  } else if (result.cancelled) {
+    parts.push("The user stopped the script. Partial output:");
+  } else {
+    parts.push(`Exit code: ${result.exit_code}`);
+  }
+  if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
+  if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
+  if (!result.stdout && !result.stderr) parts.push("(no output)");
+  if (result.truncated) {
+    parts.push("[output was truncated — have the script print less]");
+  }
+
+  const failed = result.timed_out || result.cancelled || result.exit_code !== 0;
+  return failed ? err(parts.join("\n\n")) : ok(parts.join("\n\n"));
+}
+
+/**
+ * Mirrors the Rust-side guard in `uv_add_packages`. Duplicated deliberately:
+ * the Rust check is the one that protects the command, this one produces a
+ * message the model can act on instead of a raw command failure.
+ */
+const REQUIREMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._\-[\],=<>!~*+]*$/;
+
+async function installPythonPackages(
+  input: unknown,
+  toolUseId: string,
+): Promise<ToolExecutionResult> {
+  const { packages, reason } = (input ?? {}) as {
+    packages?: unknown;
+    reason?: string;
+  };
+
+  if (!Array.isArray(packages) || packages.length === 0) {
+    return err(
+      "install_python_packages requires a non-empty `packages` array.",
+    );
+  }
+  if (!reason?.trim()) {
+    return err(
+      "install_python_packages requires `reason` — the user sees it when deciding.",
+    );
+  }
+
+  const specs = packages.map((p) => String(p).trim());
+  const invalid = specs.filter(
+    (s) => !REQUIREMENT_RE.test(s) || s.length > 128,
+  );
+  if (invalid.length > 0) {
+    return err(
+      `Refused: ${invalid.join(", ")}. Only package names and version ` +
+        "specifiers are accepted — not flags, paths, or URLs.",
+    );
+  }
+
+  const projectPath = useDocumentStore.getState().projectRoot;
+  if (!projectPath) return err("No project is open.");
+
+  const decision = await usePendingApprovalsStore.getState().request({
+    kind: "packages",
+    id: toolUseId,
+    packages: specs,
+    reason,
+    createdAt: Date.now(),
+  });
+
+  if (decision === "rejected") {
+    return err(
+      "The user declined to install these packages. Work with what is already available, or ask what they would prefer.",
+    );
+  }
+  if (decision === "timeout") {
+    return err("The user did not respond. Nothing was installed.");
+  }
+
+  try {
+    await invoke("setup_project_venv", { projectPath });
+  } catch (e) {
+    return err(`Python environment could not be prepared: ${String(e)}`);
+  }
+
+  try {
+    const output = await invoke<string>("uv_add_packages", {
+      packages: specs,
+      projectPath,
+    });
+    return ok(
+      `Installed: ${specs.join(", ")}\n\n${output.slice(0, 4000)}`.trim(),
+    );
+  } catch (e) {
+    return err(`Install failed: ${String(e)}`);
+  }
+}
+
+/** Bundled skill files are read into the prompt, so keep them modest. */
+const MAX_SKILL_FILE_CHARS = 40_000;
+
+/**
+ * Read a file from the active skill's own folder.
+ *
+ * Deliberately not an extension of `read_file`: that is scoped to the project,
+ * this is scoped to one skill directory, and the two should not be able to
+ * reach into each other. The path is normalised rather than merely joined —
+ * a skill body can be authored by anyone, so `../../.ssh/id_rsa` has to fail
+ * here rather than at the filesystem.
+ */
+async function readSkillFile(
+  input: unknown,
+  skill: Skill | undefined,
+): Promise<ToolExecutionResult> {
+  const { path } = (input ?? {}) as { path?: string };
+  if (!path) return err("read_skill_file requires `path`.");
+
+  if (!skill) {
+    return err("No skill is active, so there are no skill files to read.");
+  }
+  if (!skill.dir) {
+    return err(
+      `The "${skill.title}" skill is a single file and has no bundled files.`,
+    );
+  }
+
+  const relative = normalizeSkillRelativePath(path);
+  if (!relative) {
+    return err(
+      `Refused: '${path}' is not a path inside the skill folder. Use a ` +
+        "relative path such as 'references/guide.md'.",
+    );
+  }
+  if (!skill.files?.includes(relative)) {
+    const available = skill.files?.length
+      ? `Available: ${skill.files.join(", ")}`
+      : "This skill bundles no files.";
+    return err(`'${relative}' is not bundled with this skill. ${available}`);
+  }
+  if (isProbablyBinary(relative)) {
+    return err(`'${relative}' is a binary file and cannot be read as text.`);
+  }
+
+  try {
+    const absolute = await join(skill.dir, relative);
+    const content = await readTexFileContent(absolute);
+    if (content.length > MAX_SKILL_FILE_CHARS) {
+      return ok(
+        `${content.slice(0, MAX_SKILL_FILE_CHARS)}\n\n[truncated at ${MAX_SKILL_FILE_CHARS} characters]`,
+      );
+    }
+    return ok(content);
+  } catch (e) {
+    return err(`Could not read '${relative}': ${String(e)}`);
   }
 }
 
@@ -725,10 +1048,21 @@ async function addCitation(
   );
 }
 
+/** Per-call context the tools need but must not reach for themselves. */
+export interface ToolContext {
+  /**
+   * The skill active for this turn. Passed in rather than read from the chat
+   * store: that store imports this module, and `read_skill_file` must be
+   * scoped to the skill that is actually active for the call.
+   */
+  skill?: Skill;
+}
+
 export async function executeAiTool(
   name: string,
   input: unknown,
   toolUseId: string,
+  context: ToolContext = {},
 ): Promise<ToolExecutionResult> {
   try {
     switch (name) {
@@ -752,6 +1086,12 @@ export async function executeAiTool(
         return await lookupReferenceTool(input);
       case "add_citation":
         return await addCitation(input, toolUseId);
+      case "run_python":
+        return await runPython(input, toolUseId);
+      case "install_python_packages":
+        return await installPythonPackages(input, toolUseId);
+      case "read_skill_file":
+        return await readSkillFile(input, context.skill);
       default:
         return err(`Unknown tool: ${name}`);
     }

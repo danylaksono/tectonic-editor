@@ -105,6 +105,8 @@ function EditorSection() {
   );
   const formatLatexOnSave = useSettingsStore((s) => s.formatLatexOnSave);
   const setFormatLatexOnSave = useSettingsStore((s) => s.setFormatLatexOnSave);
+  const latexStyleHints = useSettingsStore((s) => s.latexStyleHints);
+  const setLatexStyleHints = useSettingsStore((s) => s.setLatexStyleHints);
   const simplePdfPreview = useSettingsStore((s) => s.simplePdfPreview);
   const setSimplePdfPreview = useSettingsStore((s) => s.setSimplePdfPreview);
 
@@ -184,6 +186,23 @@ function EditorSection() {
           type="checkbox"
           checked={formatLatexOnSave}
           onChange={(event) => setFormatLatexOnSave(event.target.checked)}
+          className="size-4 accent-primary"
+        />
+      </label>
+      <label className="flex cursor-pointer items-center justify-between rounded-lg border border-border px-3 py-2.5">
+        <div>
+          <div className="font-medium text-sm">Style suggestions</div>
+          <div className="text-muted-foreground text-xs">
+            Mark typography and plain-TeX carry-overs as you write: straight
+            quotes, "..." instead of \dots, $$…$$, \bf and friends, and missing
+            ties before \ref. Advisory only — each one is a hint with a
+            one-click fix, never a compile error.
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          checked={latexStyleHints}
+          onChange={(event) => setLatexStyleHints(event.target.checked)}
           className="size-4 accent-primary"
         />
       </label>

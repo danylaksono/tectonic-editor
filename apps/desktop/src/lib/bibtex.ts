@@ -7,6 +7,8 @@ export interface BibCitation {
   journal?: string;
   booktitle?: string;
   publisher?: string;
+  doi?: string;
+  url?: string;
   filePath: string;
 }
 
@@ -189,6 +191,8 @@ export function parseBibEntries(
       journal: fields.journal,
       booktitle: fields.booktitle,
       publisher: fields.publisher,
+      doi: fields.doi,
+      url: fields.url,
       filePath,
     });
 
@@ -242,6 +246,8 @@ export function parseBibtexSourceEntries(
           journal: fields.journal,
           booktitle: fields.booktitle,
           publisher: fields.publisher,
+          doi: fields.doi,
+          url: fields.url,
           filePath,
           source: content.slice(at, entryEnd + 1).trim(),
           from: at,

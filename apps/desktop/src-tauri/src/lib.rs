@@ -795,7 +795,8 @@ pub fn run() {
             uv::install_uv,
             uv::setup_project_venv,
             uv::uv_add_packages,
-            uv::uv_run_command,
+            uv::uv_run_python,
+            uv::uv_cancel_python,
             get_system_info,
             open_debug_window,
         ])

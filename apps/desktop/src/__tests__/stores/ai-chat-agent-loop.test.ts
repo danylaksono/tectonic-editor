@@ -19,6 +19,7 @@ function makeTab(id: string, overrides: Partial<TabState> = {}): TabState {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     draft: { input: "", pinnedContexts: [] },
+    activeSkillName: null,
     ...overrides,
   };
 }

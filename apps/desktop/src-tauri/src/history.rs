@@ -133,13 +133,22 @@ Thumbs.db
 .tectonic-editor/
 .prism/
 .claudeprism/
+
+# Python environments — a venv is hundreds of MB, and a snapshot is taken
+# before every AI edit, so committing one would balloon the history.
+.venv/
+venv/
+__pycache__/
 "#;
     if !excludes_path.exists() {
         let _ = fs::write(&excludes_path, content);
     } else {
         // Migrate: add current internal directories if missing from existing excludes file.
         if let Ok(existing) = fs::read_to_string(&excludes_path) {
-            if !existing.contains(".prism/") || !existing.contains(".tectonic-editor/") {
+            if !existing.contains(".prism/")
+                || !existing.contains(".tectonic-editor/")
+                || !existing.contains(".venv/")
+            {
                 let _ = fs::write(&excludes_path, content);
             }
         }
@@ -678,6 +687,9 @@ mod tests {
         assert!(content.contains(".tectonic-editor/"));
         assert!(content.contains(".claudeprism/"));
         assert!(content.contains(".prism/"));
+        // A venv must never enter history: snapshots run before every AI edit.
+        assert!(content.contains(".venv/"));
+        assert!(content.contains("__pycache__/"));
     }
 
     // ─── history_snapshot ───
@@ -963,6 +975,31 @@ mod tests {
         assert!(
             content.contains(".tectonic-editor/"),
             "should migrate to include .tectonic-editor/"
+        );
+    }
+
+    #[test]
+    fn test_ensure_excludes_migrates_projects_that_predate_venv_exclusion() {
+        let dir = setup_project(&[("main.tex", "x")]);
+        let r = root(&dir);
+        history_init(r.clone()).unwrap();
+
+        // An excludes file from before Python support: internal dirs present,
+        // so the old migration condition would have left it alone.
+        let excludes_path = dir.path().join(HISTORY_DIR).join("history-exclude");
+        fs::write(
+            &excludes_path,
+            "*.aux\n.tectonic-editor/\n.prism/\n.claudeprism/\n",
+        )
+        .unwrap();
+
+        let repo = open_repo(&r).unwrap();
+        ensure_excludes(&r, &repo);
+
+        let content = fs::read_to_string(&excludes_path).unwrap();
+        assert!(
+            content.contains(".venv/"),
+            "existing projects must pick up the venv exclusion"
         );
     }
 

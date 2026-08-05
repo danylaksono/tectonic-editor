@@ -43,6 +43,12 @@ export interface AiRequest {
   prompt: string;
   model?: string;
   systemPrompt?: string;
+  /**
+   * Body of the active skill. Appended to the system prompt by the Rust side
+   * (`providers::resolve_system_prompt`) rather than replacing it — routing a
+   * skill through `systemPrompt` would drop the base LaTeX/propose_edit rules.
+   */
+  skillPrompt?: string;
   messages: AiMessage[];
   context?: AiContext;
   tools?: AiToolDefinition[];

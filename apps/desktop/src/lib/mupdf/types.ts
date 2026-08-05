@@ -55,6 +55,9 @@ export interface LinkData {
   h: number;
   href: string;
   isExternal: boolean;
+  /** Destination name for internal links (e.g. `cite.smith2020`, `section.2.1`),
+   * or null for external links and unnamed destinations. */
+  dest: string | null;
 }
 
 export interface PageSize {

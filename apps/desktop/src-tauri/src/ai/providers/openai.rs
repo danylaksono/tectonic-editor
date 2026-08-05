@@ -48,9 +48,7 @@ impl AiProvider for OpenAiProvider {
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
-        let system = request
-            .system_prompt
-            .unwrap_or_else(super::default_latex_system_prompt);
+        let system = super::resolve_system_prompt(request.system_prompt, request.skill_prompt);
         messages.push(serde_json::json!({
             "role": "system",
             "content": system

@@ -1,6 +1,6 @@
 [package]
 name = "tectonic-editor-desktop"
-version = "1.4.7"
+version = "1.4.8"
 description = "Offline-first LaTeX editor with pluggable AI"
 edition = "2021"
 

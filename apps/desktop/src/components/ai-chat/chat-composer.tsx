@@ -20,7 +20,6 @@ import {
   CheckIcon,
   ChevronDownIcon,
   TargetIcon,
-  Wand2Icon,
 } from "lucide-react";
 import type { AiContext } from "@/lib/ai/types";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -30,6 +29,9 @@ import { useAiChatStore, offsetToLineCol } from "@/stores/ai-chat-store";
 import { useAiProviderStore } from "@/stores/ai-provider-store";
 import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useSkillsStore } from "@/stores/skills-store";
+import { SkillPicker, matchSkillTrigger, rankSkills } from "./skill-picker";
+import { getSkillIcon } from "./skill-icon";
 import { getUniqueTargetName } from "@/lib/tauri/fs";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
@@ -97,13 +99,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     bottom: 0,
   });
 
-  // Context scope & action selectors (for smart AI context)
+  // Context scope selector (for smart AI context)
   const [selectedScope, setSelectedScope] =
     useState<AiContext["scope"]>("selection");
-  const [selectedAction, setSelectedAction] =
-    useState<AiContext["action"]>("chat");
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
-  const [actionPickerOpen, setActionPickerOpen] = useState(false);
 
   // Anchor a popup directly above the button that opened it (clamped so it
   // can't overflow the right window edge)
@@ -127,6 +126,23 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionFiles, setMentionFiles] = useState<ProjectFile[]>([]);
   const mentionRef = useRef<HTMLDivElement>(null);
+
+  // `/` skill picker state
+  const [skillQuery, setSkillQuery] = useState<string | null>(null);
+  const [skillIndex, setSkillIndex] = useState(0);
+  const skillListRef = useRef<HTMLDivElement>(null);
+  const skills = useSkillsStore((s) => s.skills);
+  const ensureSkillsLoaded = useSkillsStore((s) => s.ensureLoaded);
+  const activeSkillName = useAiChatStore((s) => s.activeSkillName);
+  const setActiveSkill = useAiChatStore((s) => s.setActiveSkill);
+  const activeSkill = useMemo(
+    () => skills.find((s) => s.name === activeSkillName),
+    [skills, activeSkillName],
+  );
+  const matchedSkills = useMemo(
+    () => (skillQuery === null ? [] : rankSkills(skillQuery, skills)),
+    [skillQuery, skills],
+  );
 
   // Keep refs to latest input/pinnedContexts so the tab-switch effect can
   // save the draft without depending on these values (which would cause loops).
@@ -156,6 +172,7 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     setInput(draft?.input ?? "");
     setPinnedContexts(draft?.pinnedContexts ?? []);
     setMentionQuery(null);
+    setSkillQuery(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
@@ -169,6 +186,11 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
   const importFiles = useDocumentStore((s) => s.importFiles);
   const refreshFiles = useDocumentStore((s) => s.refreshFiles);
   const projectRoot = useDocumentStore((s) => s.projectRoot);
+
+  // Load built-in + user + project skills; reloads when the project changes
+  useEffect(() => {
+    void ensureSkillsLoaded(projectRoot);
+  }, [projectRoot, ensureSkillsLoaded]);
 
   // Consume pending attachments from external sources (e.g. PDF capture)
   const pendingAttachments = useAiChatStore((s) => s.pendingAttachments);
@@ -285,6 +307,25 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
     },
     [input],
   );
+
+  // Activating a skill consumes the whole `/query` — it is never sent as text
+  const selectSkill = useCallback(
+    (skill: { name: string }) => {
+      setActiveSkill(skill.name);
+      setInput("");
+      setSkillQuery(null);
+      if (textareaRef.current) {
+        textareaRef.current.style.height = "auto";
+      }
+      setTimeout(() => textareaRef.current?.focus(), 0);
+    },
+    [setActiveSkill],
+  );
+
+  const openSkillGallery = useCallback(() => {
+    setSkillQuery(null);
+    window.dispatchEvent(new CustomEvent("open-skill-gallery"));
+  }, []);
 
   // Handle file drops — guard against duplicate calls from stale HMR listeners
   const isProcessingDropRef = useRef(false);
@@ -478,7 +519,9 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       scope: selectedScope,
       files:
         pinnedContexts.length > 0 ? pinnedContexts.map((c) => c.filePath) : [],
-      action: selectedAction,
+      // Vestigial: skills replaced the Action picker, and Rust never read this
+      // field. Kept constant because the Rust `AiContext.action` is required.
+      action: "chat",
       selection:
         pinnedContexts.length > 0
           ? pinnedContexts.map((c) => c.selectedText).join("\n\n---\n\n")
@@ -513,6 +556,32 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // `/` skill picker navigation
+      if (skillQuery !== null) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSkillQuery(null);
+          return;
+        }
+        if (matchedSkills.length > 0) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setSkillIndex((i) => Math.min(i + 1, matchedSkills.length - 1));
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setSkillIndex((i) => Math.max(i - 1, 0));
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            selectSkill(matchedSkills[skillIndex]);
+            return;
+          }
+        }
+      }
+
       // @ mention navigation
       if (mentionQuery !== null && mentionFiles.length > 0) {
         if (e.key === "ArrowDown") {
@@ -555,6 +624,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       mentionFiles,
       mentionIndex,
       selectMention,
+      skillQuery,
+      matchedSkills,
+      skillIndex,
+      selectSkill,
     ],
   );
 
@@ -574,6 +647,10 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
         setMentionQuery(null);
       }
 
+      const slashQuery = matchSkillTrigger(value);
+      setSkillQuery(slashQuery);
+      if (slashQuery !== null) setSkillIndex(0);
+
       // Auto-resize
       const el = e.target;
       el.style.height = "auto";
@@ -589,6 +666,12 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
       active?.scrollIntoView({ block: "nearest" });
     }
   }, [mentionIndex]);
+
+  // Scroll active skill into view
+  useEffect(() => {
+    const active = skillListRef.current?.querySelector("[data-active=true]");
+    active?.scrollIntoView({ block: "nearest" });
+  }, [skillIndex]);
 
   // Close model picker on click outside
   useEffect(() => {
@@ -735,59 +818,17 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
           document.body,
         )}
 
-      {/* Action picker dropdown */}
-      {actionPickerOpen &&
-        createPortal(
-          <div
-            className="fixed inset-0 z-50"
-            onClick={() => setActionPickerOpen(false)}
-          >
-            <div
-              className="absolute min-w-[140px] overflow-hidden rounded-lg border border-border bg-background shadow-lg"
-              style={{ left: pickerPos.left, bottom: pickerPos.bottom }}
-            >
-              <div className="p-1">
-                {(
-                  [
-                    { id: "chat", label: "Chat", desc: "General conversation" },
-                    {
-                      id: "proofread",
-                      label: "Proofread",
-                      desc: "Check & fix text",
-                    },
-                    { id: "fix", label: "Fix", desc: "Fix errors only" },
-                    {
-                      id: "complete",
-                      label: "Complete",
-                      desc: "Continue writing",
-                    },
-                    { id: "explain", label: "Explain", desc: "Explain code" },
-                  ] as const
-                ).map((a) => (
-                  <button
-                    key={a.id}
-                    className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-muted"
-                    onClick={() => {
-                      setSelectedAction(a.id);
-                      setActionPickerOpen(false);
-                    }}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-xs">{a.label}</div>
-                      <div className="truncate text-muted-foreground text-xs">
-                        {a.desc}
-                      </div>
-                    </div>
-                    {selectedAction === a.id && (
-                      <CheckIcon className="size-3 shrink-0" />
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {/* `/` skill picker */}
+      {skillQuery !== null && (
+        <SkillPicker
+          skills={matchedSkills}
+          activeIndex={skillIndex}
+          onSelect={selectSkill}
+          onHover={setSkillIndex}
+          onBrowseAll={openSkillGallery}
+          listRef={skillListRef}
+        />
+      )}
 
       {/* @ mention dropdown */}
       {mentionQuery !== null && mentionFiles.length > 0 && (
@@ -919,21 +960,6 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               <ChevronDownIcon className="size-2.5" />
             </button>
 
-            {/* Action selector */}
-            <button
-              type="button"
-              onClick={(e) => {
-                anchorPickerTo(e.currentTarget);
-                setActionPickerOpen((v) => !v);
-              }}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-muted-foreground text-xs transition-colors hover:bg-muted hover:text-foreground"
-              title={`Action: ${selectedAction}`}
-            >
-              <Wand2Icon className="size-3" />
-              <span className="capitalize">{selectedAction}</span>
-              <ChevronDownIcon className="size-2.5" />
-            </button>
-
             {/* Model & settings selector */}
             <button
               ref={modelButtonRef}
@@ -951,6 +977,40 @@ export const ChatComposer: FC<{ isOpen?: boolean }> = ({ isOpen }) => {
               </span>
               <ChevronDownIcon className="size-3" />
             </button>
+
+            {/* Active skill — sticky for this tab until cleared */}
+            {activeSkillName &&
+              (() => {
+                const SkillIcon = getSkillIcon(activeSkill?.icon);
+                const missing = !activeSkill;
+                return (
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs",
+                      missing
+                        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                        : "bg-violet-500/15 text-violet-600 dark:text-violet-400",
+                    )}
+                    title={
+                      missing
+                        ? `Skill "${activeSkillName}" is no longer available — messages are sent as plain chat`
+                        : activeSkill.description
+                    }
+                  >
+                    <SkillIcon className="size-3 shrink-0" />
+                    {activeSkill?.title ?? activeSkillName}
+                    {missing && " (missing)"}
+                    <button
+                      type="button"
+                      aria-label="Clear skill"
+                      className="ml-0.5 rounded-sm p-0.5 transition-colors hover:bg-foreground/10"
+                      onClick={() => setActiveSkill(null)}
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </span>
+                );
+              })()}
           </div>
 
           {isStreaming ? (

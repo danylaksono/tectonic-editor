@@ -11,6 +11,7 @@ import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
 import { MessageSquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
+import { citationKeyFromDest } from "@/lib/pdf-citation-preview";
 
 const log = createLogger("mupdf-page");
 
@@ -331,6 +332,9 @@ export const MupdfPage = memo(function MupdfPage({
               key={i}
               href={link.href}
               data-external={link.isExternal ? "true" : undefined}
+              // Marks the anchor for the citation hover card, which the viewer
+              // resolves against the project bibliography.
+              data-cite-key={citationKeyFromDest(link.dest) ?? undefined}
               style={{
                 left: `${(link.x / pageWidth) * 100}%`,
                 top: `${(link.y / pageHeight) * 100}%`,

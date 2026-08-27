@@ -55,6 +55,14 @@ export interface ReviewAnchorUpdate {
   status: ReviewAnchorStatus;
 }
 
+/** A request from elsewhere in the app — the editor gutter — to reveal one
+ *  annotation in the PDF. The counter lets the same annotation be requested
+ *  twice in a row, mirroring the preview store's location request. */
+export interface ReviewSelectionRequest {
+  id: string;
+  requestId: number;
+}
+
 export interface ReviewAnchorCheck {
   /** Fingerprint of the PDF this annotation was last checked against. */
   fingerprint: string;
@@ -114,12 +122,15 @@ interface ReviewState {
    *  went. Deliberately in memory only: persisting it would rewrite every
    *  review file on every recompile, and it costs one pass per PDF to redo. */
   anchorChecks: Map<string, ReviewAnchorCheck>;
+  selectionRequest: ReviewSelectionRequest | null;
   loadProject: (projectRoot: string) => Promise<void>;
   clearProject: () => void;
   addComment: (input: AddReviewCommentInput) => ReviewComment;
   addReply: (id: string, body: string) => void;
   setCommentStatus: (id: string, status: ReviewComment["status"]) => void;
   setCommentTags: (id: string, tags: string[]) => void;
+  /** Ask the preview to select and scroll to one annotation. */
+  requestSelection: (id: string) => void;
   /** Record the outcome of a re-anchor pass, persisting only the annotations
    *  that actually moved. */
   applyAnchorUpdates: (
@@ -322,6 +333,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   loading: false,
   reviewer: FALLBACK_REVIEWER,
   anchorChecks: new Map(),
+  selectionRequest: null,
 
   loadProject: async (projectRoot) => {
     set({ projectRoot, comments: [], loading: true, anchorChecks: new Map() });
@@ -367,6 +379,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       comments: [],
       loading: false,
       anchorChecks: new Map(),
+      selectionRequest: null,
     }),
 
   addComment: (input) => {
@@ -456,6 +469,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     const projectRoot = get().projectRoot;
     if (projectRoot) persistAuthors(projectRoot, comments, [touchedAuthor]);
   },
+
+  requestSelection: (id) =>
+    set((state) => ({
+      selectionRequest: {
+        id,
+        requestId: (state.selectionRequest?.requestId ?? 0) + 1,
+      },
+    })),
 
   applyAnchorUpdates: (updates, fingerprint) => {
     if (updates.length === 0) return;

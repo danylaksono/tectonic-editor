@@ -27,7 +27,7 @@ import {
   CopyIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { writeFile, mkdir, exists } from "@tauri-apps/plugin-fs";
+import { writeFile, writeTextFile, mkdir, exists } from "@tauri-apps/plugin-fs";
 import { join } from "@tauri-apps/api/path";
 import {
   useDocumentStore,
@@ -104,6 +104,7 @@ import {
 } from "@/stores/review-store";
 import { reanchorAnnotations } from "@/lib/review-reanchor";
 import { collectReviewTags } from "@/lib/review-tags";
+import { buildReviewReport, reviewReportFileName } from "@/lib/review-report";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { getCachedDocument, pdfFingerprint } from "@/lib/mupdf/pdf-doc-cache";
 import { textInRect } from "@/lib/mupdf/structured-text";
@@ -392,6 +393,9 @@ export function PdfPreview() {
   const addReviewReply = useReviewStore((state) => state.addReply);
   const setReviewCommentTags = useReviewStore((state) => state.setCommentTags);
   const reviewAnchorChecks = useReviewStore((state) => state.anchorChecks);
+  const reviewSelectionRequest = useReviewStore(
+    (state) => state.selectionRequest,
+  );
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
   const scrollToPageRef = useRef<
@@ -1116,6 +1120,51 @@ export function PdfPreview() {
     },
     [documentReviewComments, handleSelectReviewComment],
   );
+
+  /** Save what the panel is showing as a readable Markdown report. The review
+   *  files on disk are already JSON; this is the version meant to be read
+   *  straight through, or printed. */
+  const handleExportReview = useCallback(
+    async (comments: ReviewComment[], filterNote: string | null) => {
+      const markdown = buildReviewReport(comments, {
+        documentRoot: rootFileName,
+        filterNote: filterNote ?? undefined,
+        totalCount: documentReviewComments.length,
+      });
+      const filePath = await save({
+        title: "Export review notes",
+        defaultPath: reviewReportFileName(rootFileName),
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!filePath) return;
+      try {
+        await writeTextFile(filePath, markdown);
+        toast.success(
+          `Exported ${comments.length} annotation${
+            comments.length === 1 ? "" : "s"
+          }`,
+        );
+      } catch (error) {
+        log.error("Failed to export review notes", { error: String(error) });
+        toast.error("Could not save the review notes");
+      }
+    },
+    [rootFileName, documentReviewComments],
+  );
+
+  // The editor gutter asks for an annotation by id; answering it here keeps
+  // selection and scrolling on the one path that already knows how to do both.
+  useEffect(() => {
+    if (!reviewSelectionRequest) return;
+    const comment = documentReviewComments.find(
+      (item) => item.id === reviewSelectionRequest.id,
+    );
+    if (comment) handleSelectReviewComment(comment);
+  }, [
+    reviewSelectionRequest,
+    documentReviewComments,
+    handleSelectReviewComment,
+  ]);
 
   const handleReviewGoToSource = useCallback(
     (comment: ReviewComment) => {
@@ -2237,6 +2286,7 @@ export function PdfPreview() {
             onSetTags={(comment, tags) =>
               setReviewCommentTags(comment.id, tags)
             }
+            onExport={handleExportReview}
             onReply={(comment, body) => addReviewReply(comment.id, body)}
             onDelete={(comment) => {
               if (

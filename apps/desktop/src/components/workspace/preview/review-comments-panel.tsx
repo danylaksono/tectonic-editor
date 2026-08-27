@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2Icon,
   CircleIcon,
   CornerDownRightIcon,
+  FileDownIcon,
   FileTextIcon,
   HighlighterIcon,
   LoaderIcon,
   MessageSquareIcon,
   ReplyIcon,
+  SearchIcon,
   TagIcon,
   Trash2Icon,
   TriangleAlertIcon,
@@ -36,6 +38,7 @@ import {
   parseReviewTags,
   SUGGESTED_REVIEW_TAGS,
 } from "@/lib/review-tags";
+import { filterReviewComments } from "@/lib/review-search";
 
 interface ReviewCommentsPanelProps {
   comments: ReviewComment[];
@@ -50,8 +53,20 @@ interface ReviewCommentsPanelProps {
     status: ReviewComment["status"],
   ) => void;
   onSetTags: (comment: ReviewComment, tags: string[]) => void;
+  /** Hands over exactly what the panel is showing, plus a phrase describing
+   *  the filter that produced it (null when nothing is filtered out). */
+  onExport: (comments: ReviewComment[], filterNote: string | null) => void;
   onReply: (comment: ReviewComment, body: string) => void;
   onDelete: (comment: ReviewComment) => void;
+}
+
+/** CSS.escape is not implemented everywhere the app runs, and losing the panel
+ *  to a missing polyfill would be a poor trade for a scroll. Annotation ids are
+ *  UUIDs, so escaping quotes and backslashes is enough. */
+function escapeAttributeValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
 }
 
 function formatTimestamp(value: string): string {
@@ -212,6 +227,7 @@ export function ReviewCommentsPanel({
   onGoToSource,
   onSetStatus,
   onSetTags,
+  onExport,
   onReply,
   onDelete,
 }: ReviewCommentsPanelProps) {
@@ -220,6 +236,9 @@ export function ReviewCommentsPanel({
   const [editingTagsFor, setEditingTagsFor] = useState<string | null>(null);
   const [activeTags, setActiveTags] = useState<string[]>([]);
   const [driftedOnly, setDriftedOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   const tagCounts = useMemo(() => collectReviewTags(comments), [comments]);
   const knownTags = useMemo(
@@ -250,7 +269,7 @@ export function ReviewCommentsPanel({
 
   const visibleComments = useMemo(
     () =>
-      comments
+      filterReviewComments(comments, query)
         .filter((comment) => showResolved || comment.status === "open")
         .filter(
           (comment) =>
@@ -262,11 +281,110 @@ export function ReviewCommentsPanel({
           if (a.status !== b.status) return a.status === "open" ? -1 : 1;
           return a.anchor.page - b.anchor.page;
         }),
-    [comments, showResolved, activeTags, driftedOnly, driftedIds],
+    [comments, query, showResolved, activeTags, driftedOnly, driftedIds],
   );
   const openCount = comments.filter(
     (comment) => comment.status === "open",
   ).length;
+
+  /** Reads back the active filters as a phrase for the exported report, so a
+   *  partial export never looks like the whole review. */
+  const filterNote = useMemo(() => {
+    const parts: string[] = [];
+    if (!showResolved) parts.push("open annotations");
+    if (activeTags.length > 0) {
+      parts.push(`tagged ${activeTags.map((tag) => `#${tag}`).join(", ")}`);
+    }
+    if (driftedOnly) parts.push("that could not be located in the current PDF");
+    if (query.trim()) parts.push(`matching "${query.trim()}"`);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }, [showResolved, activeTags, driftedOnly, query]);
+
+  /** Step through the list in the order it is displayed. `predicate` narrows
+   *  the hop, which is what makes "next open" different from "next". */
+  const step = useCallback(
+    (delta: number, predicate?: (comment: ReviewComment) => boolean) => {
+      const list = predicate
+        ? visibleComments.filter(predicate)
+        : visibleComments;
+      if (list.length === 0) return;
+      const current = list.findIndex((comment) => comment.id === selectedId);
+      // Nothing selected yet: forwards starts at the top, backwards at the end.
+      const next =
+        current === -1
+          ? delta > 0
+            ? 0
+            : list.length - 1
+          : (current + delta + list.length) % list.length;
+      onSelect(list[next]);
+    },
+    [visibleComments, selectedId, onSelect],
+  );
+
+  // Keys are panel-wide rather than bound to a focused element: the point is to
+  // walk the list while reading the PDF, which means the keys have to work when
+  // focus is in the document. Anything typed into a field is left alone.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement
+      ) {
+        // Escape still gets out of the search box.
+        if (event.key === "Escape" && target === searchRef.current) {
+          event.preventDefault();
+          if (query) setQuery("");
+          else searchRef.current?.blur();
+        }
+        return;
+      }
+
+      const isOpen = (comment: ReviewComment) => comment.status === "open";
+      switch (event.key) {
+        case "j":
+        case "ArrowDown":
+          event.preventDefault();
+          step(1);
+          break;
+        case "k":
+        case "ArrowUp":
+          event.preventDefault();
+          step(-1);
+          break;
+        case "n":
+          event.preventDefault();
+          step(1, isOpen);
+          break;
+        case "N":
+          event.preventDefault();
+          step(-1, isOpen);
+          break;
+        case "/":
+          event.preventDefault();
+          searchRef.current?.focus();
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [step, query]);
+
+  // Keep the selected card in view when the selection moves by key, or when
+  // the PDF is clicked and the panel has to catch up.
+  useEffect(() => {
+    if (!selectedId) return;
+    const card = listRef.current?.querySelector<HTMLElement>(
+      `[data-annotation-id="${escapeAttributeValue(selectedId)}"]`,
+    );
+    // scrollIntoView is absent in some environments; scrolling is a nicety and
+    // must never take the panel down with it.
+    card?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedId]);
 
   const toggleTag = (tag: string) =>
     setActiveTags((current) =>
@@ -287,14 +405,52 @@ export function ReviewCommentsPanel({
             {openCount} open · {comments.length} total
           </p>
         </div>
-        <Button
-          variant={showResolved ? "secondary" : "ghost"}
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => setShowResolved((value) => !value)}
-        >
-          {showResolved ? "Hide resolved" : "Show resolved"}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            variant={showResolved ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => setShowResolved((value) => !value)}
+          >
+            {showResolved ? "Hide resolved" : "Show resolved"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            aria-label="Export review notes"
+            title="Export what is shown as Markdown"
+            disabled={visibleComments.length === 0}
+            onClick={() => onExport(visibleComments, filterNote)}
+          >
+            <FileDownIcon className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="relative shrink-0 border-border border-b px-3 py-2">
+        <SearchIcon className="pointer-events-none absolute top-1/2 left-5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search notes, quotes, #tags…"
+          aria-label="Search annotations"
+          className="h-7 w-full rounded border border-border bg-background pr-6 pl-7 text-xs outline-none focus:border-primary/60"
+        />
+        {query && (
+          <button
+            type="button"
+            className="absolute top-1/2 right-5 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery("");
+              searchRef.current?.focus();
+            }}
+          >
+            <XIcon className="size-3" />
+          </button>
+        )}
       </div>
 
       {(tagCounts.length > 0 || driftedIds.size > 0) && (
@@ -340,7 +496,7 @@ export function ReviewCommentsPanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-2">
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground text-sm">
             <LoaderIcon className="size-4 animate-spin" />
@@ -352,9 +508,11 @@ export function ReviewCommentsPanel({
             <p className="font-medium text-sm">
               {comments.length === 0
                 ? "No annotations yet"
-                : activeTags.length > 0 || driftedOnly
-                  ? "Nothing matches this filter"
-                  : "No open annotations"}
+                : query.trim()
+                  ? "Nothing matches this search"
+                  : activeTags.length > 0 || driftedOnly
+                    ? "Nothing matches this filter"
+                    : "No open annotations"}
             </p>
             <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
               Pick the highlighter or comment tool in the toolbar, then drag a
@@ -369,6 +527,7 @@ export function ReviewCommentsPanel({
               return (
                 <article
                   key={comment.id}
+                  data-annotation-id={comment.id}
                   className={cn(
                     "rounded-lg border bg-card p-3 transition-colors",
                     selectedId === comment.id
@@ -565,6 +724,12 @@ export function ReviewCommentsPanel({
             })}
           </div>
         )}
+      </div>
+
+      <div className="shrink-0 border-border border-t px-3 py-1.5 text-[10px] text-muted-foreground">
+        <kbd className="font-sans">j</kbd>/<kbd className="font-sans">k</kbd>{" "}
+        move · <kbd className="font-sans">n</kbd> next open ·{" "}
+        <kbd className="font-sans">/</kbd> search
       </div>
     </aside>
   );

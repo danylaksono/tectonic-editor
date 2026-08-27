@@ -88,6 +88,11 @@ import {
 } from "@/lib/latex-compiler";
 import { useSettingsStore } from "@/stores/settings-store";
 import { getEditorThemeExtensions } from "@/lib/editor-themes";
+import {
+  reviewGutterEntries,
+  reviewGutterExtension,
+  setReviewGutterEntries,
+} from "@/lib/review-gutter";
 import { EditorTabs } from "./editor-tabs";
 import { EditorToolbar } from "./editor-toolbar";
 import { SelectionToolbar, type ToolbarAction } from "./selection-toolbar";
@@ -154,6 +159,8 @@ import { findStyleIssues } from "@/lib/latex-style";
 import { sourceLensExtension } from "@/lib/source-lens";
 import { defaultWorkspaceMode, useLensStore } from "@/stores/lens-store";
 import { usePreviewStore } from "@/stores/preview-store";
+import { useReviewStore } from "@/stores/review-store";
+import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -406,6 +413,21 @@ export function LatexEditor() {
   const clearJumpRequest = useDocumentStore((s) => s.clearJumpRequest);
   const pdfRevision = useDocumentStore((s) => s.pdfRevision);
   const requestPdfLocation = usePreviewStore((s) => s.requestLocation);
+  const reviewComments = useReviewStore((s) => s.comments);
+  const requestReviewSelection = useReviewStore((s) => s.requestSelection);
+  const setReviewMode = useWorkspaceLayoutStore((s) => s.setReviewMode);
+  // The gutter extension is built once with the view, so it gets a stable
+  // callback that reads whatever the current handler is.
+  const revealAnnotationRef = useRef<(id: string) => void>(() => {});
+  const revealAnnotation = useCallback((id: string) => {
+    revealAnnotationRef.current(id);
+  }, []);
+  useEffect(() => {
+    revealAnnotationRef.current = (id: string) => {
+      setReviewMode(true);
+      requestReviewSelection(id);
+    };
+  }, [setReviewMode, requestReviewSelection]);
 
   const setIsCompiling = useDocumentStore((s) => s.setIsCompiling);
   const setPdfData = useDocumentStore((s) => s.setPdfData);
@@ -517,6 +539,7 @@ export function LatexEditor() {
   const mergeCompartmentRef = useRef(new Compartment());
   const vimCompartmentRef = useRef(new Compartment());
   const lensCompartmentRef = useRef(new Compartment());
+  const reviewGutterCompartmentRef = useRef(new Compartment());
   const isMergeActiveRef = useRef(false);
   const pendingChangeRef = useRef<ProposedChange | null>(null);
   const handleKeepAllRef = useRef<() => void>(() => {});
@@ -1863,6 +1886,7 @@ export function LatexEditor() {
         mergeCompartmentRef.current.of([]),
         vimCompartmentRef.current.of([]),
         lensCompartmentRef.current.of(lensActive ? sourceLensExtension : []),
+        reviewGutterCompartmentRef.current.of([]),
         updateListener,
         EditorView.lineWrapping,
         scrollPastEnd(),
@@ -2188,6 +2212,25 @@ export function LatexEditor() {
       ),
     });
   }, [activeFileId, isTextFile, lensActive]);
+
+  // Review annotations pointing into the file on screen, as gutter markers.
+  // The gutter is reconfigured away when there are none so it never claims a
+  // column of empty space in projects that do not use review at all.
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || !isTextFile) return;
+    const entries = activeFile
+      ? reviewGutterEntries(reviewComments, activeFile.relativePath)
+      : [];
+    view.dispatch({
+      effects: [
+        reviewGutterCompartmentRef.current.reconfigure(
+          entries.length > 0 ? reviewGutterExtension(revealAnnotation) : [],
+        ),
+        ...(entries.length > 0 ? [setReviewGutterEntries.of(entries)] : []),
+      ],
+    });
+  }, [activeFile, isTextFile, reviewComments, revealAnnotation]);
 
   useEffect(() => {
     const view = viewRef.current;

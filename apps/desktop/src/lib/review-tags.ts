@@ -10,9 +10,14 @@ export const MAX_REVIEW_TAG_LENGTH = 24;
 /** Past a handful the card turns into a tag cloud and stops being scannable. */
 export const MAX_REVIEW_TAGS = 8;
 
-/** Offered when a project has no tags yet. Deliberately a viva-prep set
- *  rather than a generic one — these are only suggestions, any tag works. */
-export const SUGGESTED_REVIEW_TAGS = [
+/** The customisable suggestion list can be longer than one annotation's worth:
+ *  it is a vocabulary, not a set of labels applied together. */
+export const MAX_SUGGESTED_REVIEW_TAGS = 20;
+
+/** The list a new install starts with, editable in Settings. A viva-prep set
+ *  rather than a generic one — but only a starting point, and any tag works
+ *  whether or not it is on the list. */
+export const DEFAULT_REVIEW_TAGS = [
   "likely-question",
   "weakness",
   "defend",
@@ -39,8 +44,12 @@ export function normalizeReviewTag(raw: string): string | null {
   return trimmed.replace(/-+$/, "") || null;
 }
 
-/** Normalise a list, dropping blanks and duplicates, capped at MAX_REVIEW_TAGS. */
-export function dedupeReviewTags(tags: Iterable<string>): string[] {
+/** Normalise a list, dropping blanks and duplicates. The cap defaults to what
+ *  fits on one annotation; the settings vocabulary passes a larger one. */
+export function dedupeReviewTags(
+  tags: Iterable<string>,
+  limit = MAX_REVIEW_TAGS,
+): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const raw of tags) {
@@ -48,15 +57,15 @@ export function dedupeReviewTags(tags: Iterable<string>): string[] {
     if (!tag || seen.has(tag)) continue;
     seen.add(tag);
     result.push(tag);
-    if (result.length >= MAX_REVIEW_TAGS) break;
+    if (result.length >= limit) break;
   }
   return result;
 }
 
 /** Split typed input on commas and whitespace, so "typo, cite-check" and
  *  "typo cite-check" both add two tags. */
-export function parseReviewTags(input: string): string[] {
-  return dedupeReviewTags(input.split(/[,\s]+/));
+export function parseReviewTags(input: string, limit?: number): string[] {
+  return dedupeReviewTags(input.split(/[,\s]+/), limit);
 }
 
 export interface ReviewTagCount {

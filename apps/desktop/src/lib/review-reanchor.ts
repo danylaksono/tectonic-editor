@@ -7,28 +7,33 @@ import type {
 } from "@/stores/review-store";
 
 /**
- * Re-anchoring review annotations onto a freshly compiled PDF.
+ * Checking review annotations against a freshly compiled PDF.
  *
- * Annotations are stored as page + x/y boxes measured against one exact build.
- * Recompile after editing a chapter and every anchor below the edit is off by
- * however much the text moved — silently, which is worse than losing them,
- * because a comment then sits over the wrong paragraph.
+ * Annotations are stored as page + x/y boxes measured against one exact build,
+ * so a recompile that reflows text leaves them pointing somewhere else.
  *
- * Two ways back to the right place, in order of precision:
+ * This pass reports that; it does not repair it. An annotation stays exactly
+ * where it was placed, because that position is a deliberate act — the reader
+ * put the box where they meant it, over a figure, a margin, a region — and
+ * re-seating it on whatever the text search matched replaces their judgement
+ * with a guess. A confidently wrong new position is worse than a stale one: it
+ * looks authoritative. So the pass answers "is this still true?" and leaves
+ * acting on the answer to the person.
+ *
+ * Two ways to ask, in order of precision:
  *
  *  1. The text the annotation covers (captured when it was made). Searching
  *     for it finds the exact span wherever it ended up, and survives source
  *     edits elsewhere in the document.
- *  2. The SyncTeX source location. Coarser — it resolves a source line, so a
- *     half-paragraph highlight snaps to that line's box — and only as good as
- *     the stored line number, which the user may since have edited around. But
- *     it is the only route for annotations with no text under them.
+ *  2. The SyncTeX source location. Coarser — it resolves a source line rather
+ *     than a span — and only as good as the stored line number, which the user
+ *     may since have edited around. But it is the only route for annotations
+ *     with no text under them.
  *
- * Anything a route was tried on and failed is reported as drifted rather than
- * moved, so the UI can say so instead of pretending. An annotation with neither
- * a text nor a source locator is reported as unverified instead: we cannot tell
- * whether it moved, and calling that drift would cry wolf on every old
- * annotation in the project.
+ * Four outcomes: the text is where the annotation is (ok), it is somewhere
+ * else and we know where (shifted), it is gone (drifted), or there was nothing
+ * to search by in the first place (unverified) — which is not evidence either
+ * way, and calling it drift would cry wolf over every old annotation.
  */
 
 /** Shorter needles than this match half the document. */
@@ -46,8 +51,10 @@ const SEARCH_RADIUS_PAGES = 8;
 const MAX_HITS_PER_PAGE = 4;
 /** Ceiling on one pass, so a pathological project cannot hang the preview. */
 const MAX_REANCHOR_ANNOTATIONS = 500;
-/** PDF points. Sub-point jitter between builds is not a move worth saving. */
-const POSITION_EPSILON = 1.5;
+/** PDF points. Roughly a line of body text: rebuilds nudge things by fractions
+ *  of a point, and a highlight drawn a little above its words should not be
+ *  reported as having moved. */
+const POSITION_TOLERANCE = 12;
 
 export interface ReanchorBox {
   page: number;
@@ -175,38 +182,32 @@ async function relocateByText(
   return null;
 }
 
-/** Apply a located box to an anchor, reporting whether it actually moved.
- *  Point pins keep their own size — text search and SyncTeX both report the
- *  size of the surrounding text, which is not the size of a pin. */
-function settle(
+/** Compare where the text turned up against where the annotation sits.
+ *
+ *  Only the top-left corner is compared. Size is deliberately ignored: a
+ *  dragged highlight is whatever box the reader swept out, which has no reason
+ *  to match the bounding box of the words inside it, and treating that
+ *  difference as movement would report drift on every annotation ever made
+ *  with the highlighter. */
+function classify(
   id: string,
   anchor: ReviewAnchor,
   box: ReanchorBox,
 ): ReviewAnchorUpdate {
-  const keepSize = anchor.kind === "point";
-  const next: ReviewAnchor = {
-    ...anchor,
-    page: box.page,
-    x: box.x,
-    y: box.y,
-    width: keepSize || box.width <= 0 ? anchor.width : box.width,
-    height: keepSize || box.height <= 0 ? anchor.height : box.height,
-  };
-  const unchanged =
-    next.page === anchor.page &&
-    Math.abs(next.x - anchor.x) < POSITION_EPSILON &&
-    Math.abs(next.y - anchor.y) < POSITION_EPSILON &&
-    Math.abs(next.width - anchor.width) < POSITION_EPSILON &&
-    Math.abs(next.height - anchor.height) < POSITION_EPSILON;
-  return unchanged
-    ? { id, anchor, status: "ok" }
-    : { id, anchor: next, status: "moved" };
+  const inPlace =
+    box.page === anchor.page &&
+    Math.abs(box.x - anchor.x) < POSITION_TOLERANCE &&
+    Math.abs(box.y - anchor.y) < POSITION_TOLERANCE;
+  return inPlace
+    ? { id, status: "ok" }
+    : { id, status: "shifted", foundAt: box };
 }
 
 /**
- * Check the given annotations against the current PDF and report where each
- * belongs now. Callers filter out annotations already checked against this
- * build — the pass is idempotent, but not free.
+ * Check the given annotations against the current PDF. Nothing is modified:
+ * the result says, per annotation, whether its text is still under it and
+ * where else it turned up. Callers filter out annotations already checked
+ * against this build — the pass is idempotent, but not free.
  */
 export async function reanchorAnnotations(
   comments: readonly ReviewComment[],
@@ -227,13 +228,12 @@ export async function reanchorAnnotations(
     // report drift that a newer build has already made irrelevant.
     if (ctx.isCancelled?.()) return updates;
     if (box) {
-      updates.push(settle(comment.id, comment.anchor, box));
+      updates.push(classify(comment.id, comment.anchor, box));
     } else if (comment.anchor.source) {
       needSynctex.push({ comment, source: comment.anchor.source });
     } else {
       updates.push({
         id: comment.id,
-        anchor: comment.anchor,
         status: isSearchable(comment.anchor.selectedText)
           ? "drifted"
           : "unverified",
@@ -252,8 +252,8 @@ export async function reanchorAnnotations(
       const box = boxes[index];
       updates.push(
         box && box.page >= 1 && box.page <= ctx.pageCount
-          ? settle(comment.id, comment.anchor, box)
-          : { id: comment.id, anchor: comment.anchor, status: "drifted" },
+          ? classify(comment.id, comment.anchor, box)
+          : { id: comment.id, status: "drifted" },
       );
     });
   }

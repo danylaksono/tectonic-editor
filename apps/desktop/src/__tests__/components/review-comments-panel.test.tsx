@@ -50,7 +50,9 @@ function renderPanel(
     loading: false,
     selectedId: null,
     anchorChecks: new Map(),
+    suggestedTags: ["weakness"],
     onSelect,
+    onShowFoundLocation: vi.fn(),
     onGoToSource: vi.fn(),
     onSetStatus: vi.fn(),
     onSetTags: vi.fn(),
@@ -215,5 +217,89 @@ describe("ReviewCommentsPanel search", () => {
     const [exported, note] = onExport.mock.calls[0];
     expect(exported.map((c: ReviewComment) => c.id)).toEqual(["a"]);
     expect(note).toContain('matching "sample"');
+  });
+});
+
+describe("ReviewCommentsPanel stale annotations", () => {
+  it("says where shifted text went and offers to show it, without moving anything", async () => {
+    const onShowFoundLocation = vi.fn();
+    const foundAt = { page: 14, x: 90, y: 400, width: 310, height: 16 };
+    renderPanel([makeComment("a")], {
+      anchorChecks: new Map([
+        ["a", { fingerprint: "f", status: "shifted" as const, foundAt }],
+      ]),
+      onShowFoundLocation,
+    });
+
+    expect(screen.getByText(/This text has moved to p\. 14/)).toBeTruthy();
+    await user().click(screen.getByRole("button", { name: "Show me" }));
+
+    expect(onShowFoundLocation).toHaveBeenCalledWith(foundAt);
+  });
+
+  it("says plainly when the text is gone, with nothing to jump to", () => {
+    renderPanel([makeComment("a")], {
+      anchorChecks: new Map([
+        ["a", { fingerprint: "f", status: "drifted" as const }],
+      ]),
+    });
+
+    expect(screen.getByText(/no longer in the PDF/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show me" })).toBeNull();
+  });
+
+  it("counts shifted and drifted together as stale, and filters to them", async () => {
+    renderPanel([makeComment("a"), makeComment("b"), makeComment("c")], {
+      anchorChecks: new Map([
+        ["a", { fingerprint: "f", status: "shifted" as const }],
+        ["b", { fingerprint: "f", status: "drifted" as const }],
+        ["c", { fingerprint: "f", status: "ok" as const }],
+      ]),
+    });
+
+    const chip = screen.getByRole("button", { name: /2 stale/ });
+    await user().click(chip);
+
+    expect(screen.queryByText("note c")).toBeNull();
+    expect(screen.getByText("note a")).toBeTruthy();
+    expect(screen.getByText("note b")).toBeTruthy();
+  });
+
+  it("says nothing about annotations it could not check", () => {
+    renderPanel([makeComment("a")], {
+      anchorChecks: new Map([
+        ["a", { fingerprint: "f", status: "unverified" as const }],
+      ]),
+    });
+
+    // Nothing to search by is not evidence of a problem, so no warning.
+    expect(screen.queryByRole("button", { name: /stale/ })).toBeNull();
+    expect(screen.queryByText(/no longer in the PDF/)).toBeNull();
+  });
+});
+
+describe("ReviewCommentsPanel tag suggestions", () => {
+  it("offers the configured vocabulary when tagging", async () => {
+    renderPanel([makeComment("a")], { suggestedTags: ["my-own-tag"] });
+
+    await user().click(screen.getByRole("button", { name: "Edit tags" }));
+
+    expect(screen.getByRole("button", { name: "my-own-tag" })).toBeTruthy();
+  });
+
+  it("applies a suggestion to the annotation", async () => {
+    const onSetTags = vi.fn();
+    renderPanel([makeComment("a")], {
+      suggestedTags: ["my-own-tag"],
+      onSetTags,
+    });
+
+    await user().click(screen.getByRole("button", { name: "Edit tags" }));
+    await user().click(screen.getByRole("button", { name: "my-own-tag" }));
+
+    expect(onSetTags).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "a" }),
+      ["my-own-tag"],
+    );
   });
 });

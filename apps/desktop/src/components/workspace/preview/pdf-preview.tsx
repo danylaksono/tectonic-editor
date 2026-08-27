@@ -19,7 +19,12 @@ import {
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   Minimize2Icon,
+  CircleIcon,
   HighlighterIcon,
+  PencilIcon,
+  PenLineIcon,
+  MoveUpRightIcon,
+  SquareIcon,
   CheckIcon,
   SparklesIcon,
   GaugeIcon,
@@ -87,6 +92,7 @@ import {
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   PdfViewer,
+  type PdfDrawingTarget,
   type PdfHighlightLocation,
   type PdfReviewAnnotation,
   type PdfReviewTarget,
@@ -104,6 +110,7 @@ import {
 } from "@/stores/review-store";
 import { reanchorAnnotations } from "@/lib/review-reanchor";
 import { collectReviewTags } from "@/lib/review-tags";
+import type { ReviewDrawingTool } from "@/lib/review-drawing";
 import { buildReviewReport, reviewReportFileName } from "@/lib/review-report";
 import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
 import { getCachedDocument, pdfFingerprint } from "@/lib/mupdf/pdf-doc-cache";
@@ -299,6 +306,20 @@ function CompileErrorDetails({
  * change identity every render and defeat memoization downstream. */
 const NO_REVIEW_ANNOTATIONS: PdfReviewAnnotation[] = [];
 
+/** The pencil's shapes. Freehand first: it is the one people reach for, and
+ *  the shapes are the tidier alternative when a mouse makes scribbling hard. */
+const DRAWING_TOOLS: {
+  id: ReviewDrawingTool;
+  label: string;
+  icon: typeof PencilIcon;
+}[] = [
+  { id: "freehand", label: "Freehand", icon: PenLineIcon },
+  { id: "arrow", label: "Arrow", icon: MoveUpRightIcon },
+  { id: "line", label: "Line", icon: MinusIcon },
+  { id: "box", label: "Box", icon: SquareIcon },
+  { id: "ellipse", label: "Ellipse", icon: CircleIcon },
+];
+
 export function PdfPreview() {
   const compilerBackend = useSettingsStore((s) => s.compilerBackend);
   const setCompilerBackend = useSettingsStore((s) => s.setCompilerBackend);
@@ -396,6 +417,7 @@ export function PdfPreview() {
   const reviewSelectionRequest = useReviewStore(
     (state) => state.selectionRequest,
   );
+  const configuredReviewTags = useSettingsStore((state) => state.reviewTags);
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
   const scrollToPageRef = useRef<
@@ -426,8 +448,11 @@ export function PdfPreview() {
   // Armed tool while review mode is on: drag-a-box highlighter or
   // click-to-pin comments. "none" leaves the PDF in plain browse mode.
   const [reviewTool, setReviewTool] = useState<
-    "none" | "highlight" | "comment"
+    "none" | "highlight" | "comment" | "draw"
   >("none");
+  /** Which pencil shape is armed. Remembered while the pencil is disarmed, so
+   *  picking the tool back up gives you the shape you were last using. */
+  const [drawTool, setDrawTool] = useState<ReviewDrawingTool>("freehand");
   useEffect(() => {
     if (!reviewMode) setReviewTool("none");
   }, [reviewMode]);
@@ -530,9 +555,16 @@ export function PdfPreview() {
       reviewComments.filter((comment) => comment.documentRoot === rootFileName),
     [reviewComments, rootFileName],
   );
+  /** Tags in use in this project first — that is the vocabulary actually being
+   *  used — then the configured list from Settings. */
   const knownReviewTags = useMemo(
-    () => collectReviewTags(documentReviewComments).map((entry) => entry.tag),
-    [documentReviewComments],
+    () => [
+      ...new Set([
+        ...collectReviewTags(documentReviewComments).map((entry) => entry.tag),
+        ...configuredReviewTags,
+      ]),
+    ],
+    [documentReviewComments, configuredReviewTags],
   );
   const reviewAnnotations: PdfReviewAnnotation[] = useMemo(
     () =>
@@ -547,6 +579,7 @@ export function PdfPreview() {
         annotationKind: comment.kind,
         status: comment.status,
         color: comment.color,
+        drawing: comment.drawing,
       })),
     [documentReviewComments],
   );
@@ -789,14 +822,16 @@ export function PdfPreview() {
     });
     if (reanchorGenRef.current !== generation) return;
 
-    const moved = updates.filter((update) => update.status === "moved").length;
+    const shifted = updates.filter(
+      (update) => update.status === "shifted",
+    ).length;
     const drifted = updates.filter(
       (update) => update.status === "drifted",
     ).length;
-    if (moved > 0 || drifted > 0) {
-      log.info("Re-anchored review annotations", {
+    if (shifted > 0 || drifted > 0) {
+      log.info("Checked review annotations against the new build", {
         checked: updates.length,
-        moved,
+        shifted,
         drifted,
       });
     }
@@ -834,6 +869,55 @@ export function PdfPreview() {
           y: target.y,
           width: Math.max(12, target.width),
           height: Math.max(12, target.height),
+          selectedText: selectedText || undefined,
+          source: source ?? undefined,
+        },
+      });
+      setSelectedReviewId(comment.id);
+    },
+    [projectRoot, rootFileName, addReviewComment, captureAnchorText],
+  );
+
+  /** Saved straight away like a highlight: the mark is the annotation, and a
+   *  dialog between drawing and seeing it would break the flow of marking up a
+   *  chapter. A note can be added afterwards as a reply. */
+  const createDrawingAnnotation = useCallback(
+    async (target: PdfDrawingTarget) => {
+      const centre = {
+        x: target.bounds.x + target.bounds.width / 2,
+        y: target.bounds.y + target.bounds.height / 2,
+      };
+      const [source, selectedText] = await Promise.all([
+        projectRoot
+          ? synctexEdit(projectRoot, target.page, centre.x, centre.y)
+          : Promise.resolve(null),
+        captureAnchorText({
+          kind: "text",
+          page: target.page,
+          x: target.bounds.x,
+          y: target.bounds.y,
+          width: target.bounds.width,
+          height: target.bounds.height,
+          selectedText: "",
+        }),
+      ]);
+      const comment = addReviewComment({
+        documentRoot: rootFileName,
+        kind: "drawing",
+        color: useSettingsStore.getState().reviewHighlightColor,
+        body: "",
+        drawing: {
+          tool: target.tool,
+          points: target.points,
+          strokeWidth: target.strokeWidth,
+        },
+        anchor: {
+          kind: "text",
+          page: target.page,
+          x: target.bounds.x,
+          y: target.bounds.y,
+          width: target.bounds.width,
+          height: target.bounds.height,
           selectedText: selectedText || undefined,
           source: source ?? undefined,
         },
@@ -1707,6 +1791,14 @@ export function PdfPreview() {
                   }
                   onAddReviewComment={isActive ? startReviewComment : undefined}
                   onDocumentReady={isActive ? runReanchorPass : undefined}
+                  drawTool={
+                    isActive && reviewMode && reviewTool === "draw"
+                      ? drawTool
+                      : null
+                  }
+                  onPlaceDrawing={
+                    isActive ? createDrawingAnnotation : undefined
+                  }
                   commentPlacementMode={
                     isActive && reviewMode && reviewTool === "comment"
                   }
@@ -1990,6 +2082,59 @@ export function PdfPreview() {
               >
                 <MessageSquarePlusIcon className="size-3.5" />
               </Button>
+              <Button
+                variant={reviewTool === "draw" ? "secondary" : "ghost"}
+                size="icon"
+                className="size-7"
+                title={`Draw (${
+                  DRAWING_TOOLS.find((entry) => entry.id === drawTool)?.label ??
+                  "freehand"
+                }) — drag over the PDF to mark it up`}
+                aria-label="Draw"
+                aria-pressed={reviewTool === "draw"}
+                onClick={() =>
+                  setReviewTool((tool) => (tool === "draw" ? "none" : "draw"))
+                }
+              >
+                {(() => {
+                  const Icon =
+                    DRAWING_TOOLS.find((entry) => entry.id === drawTool)
+                      ?.icon ?? PencilIcon;
+                  return <Icon className="size-3.5" />;
+                })()}
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-7"
+                    title="Drawing shape"
+                    aria-label="Drawing shape"
+                  >
+                    <ChevronDownIcon className="size-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-36">
+                  {DRAWING_TOOLS.map(({ id, label, icon: Icon }) => (
+                    <DropdownMenuItem
+                      key={id}
+                      onClick={() => {
+                        setDrawTool(id);
+                        // Picking a shape arms the pencil, like the colour
+                        // picker arms the highlighter.
+                        setReviewTool("draw");
+                      }}
+                    >
+                      <Icon className="size-3.5" />
+                      {label}
+                      {drawTool === id && (
+                        <CheckIcon className="ml-auto size-3.5" />
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <div className="mx-1 h-4 w-px bg-border" />
             </>
           )}
@@ -2278,6 +2423,7 @@ export function PdfPreview() {
             loading={reviewLoading}
             selectedId={selectedReviewId}
             anchorChecks={reviewAnchorChecks}
+            suggestedTags={configuredReviewTags}
             onSelect={handleSelectReviewComment}
             onGoToSource={handleReviewGoToSource}
             onSetStatus={(comment, status) =>
@@ -2287,6 +2433,7 @@ export function PdfPreview() {
               setReviewCommentTags(comment.id, tags)
             }
             onExport={handleExportReview}
+            onShowFoundLocation={(location) => requestPdfLocation(location)}
             onReply={(comment, body) => addReviewReply(comment.id, body)}
             onDelete={(comment) => {
               if (

@@ -8,6 +8,7 @@ import {
   HighlighterIcon,
   LoaderIcon,
   MessageSquareIcon,
+  PenLineIcon,
   ReplyIcon,
   SearchIcon,
   TagIcon,
@@ -19,6 +20,7 @@ import type {
   ReviewAnchor,
   ReviewAnchorCheck,
   ReviewComment,
+  ReviewFoundLocation,
 } from "@/stores/review-store";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,16 +38,18 @@ import {
   dedupeReviewTags,
   MAX_REVIEW_TAGS,
   parseReviewTags,
-  SUGGESTED_REVIEW_TAGS,
 } from "@/lib/review-tags";
 import { filterReviewComments } from "@/lib/review-search";
+import { ReviewMarkdown } from "./review-markdown";
 
 interface ReviewCommentsPanelProps {
   comments: ReviewComment[];
   loading: boolean;
   selectedId: string | null;
-  /** Outcome of the last re-anchor pass, keyed by annotation id. */
+  /** Outcome of the last anchor check, keyed by annotation id. */
   anchorChecks: Map<string, ReviewAnchorCheck>;
+  /** The user's tag vocabulary, offered as one-click suggestions. */
+  suggestedTags: string[];
   onSelect: (comment: ReviewComment) => void;
   onGoToSource: (comment: ReviewComment) => void;
   onSetStatus: (
@@ -56,6 +60,9 @@ interface ReviewCommentsPanelProps {
   /** Hands over exactly what the panel is showing, plus a phrase describing
    *  the filter that produced it (null when nothing is filtered out). */
   onExport: (comments: ReviewComment[], filterNote: string | null) => void;
+  /** Scroll the PDF to where an annotation's text turned up, without touching
+   *  where the annotation itself sits. */
+  onShowFoundLocation: (location: ReviewFoundLocation) => void;
   onReply: (comment: ReviewComment, body: string) => void;
   onDelete: (comment: ReviewComment) => void;
 }
@@ -143,11 +150,13 @@ function TagChip({
 function TagEditor({
   tags,
   knownTags,
+  suggestedTags,
   onChange,
   onClose,
 }: {
   tags: string[];
   knownTags: string[];
+  suggestedTags: string[];
   onChange: (tags: string[]) => void;
   onClose: () => void;
 }) {
@@ -163,8 +172,10 @@ function TagEditor({
     setDraft("");
   };
 
-  // Anything already on this annotation is not worth suggesting again.
-  const suggestions = [...new Set([...knownTags, ...SUGGESTED_REVIEW_TAGS])]
+  // Tags already in the project come first — they are the vocabulary actually
+  // in use — followed by the configured list. Anything already on this
+  // annotation is not worth suggesting again.
+  const suggestions = [...new Set([...knownTags, ...suggestedTags])]
     .filter((tag) => !tags.includes(tag))
     .slice(0, 12);
 
@@ -223,19 +234,21 @@ export function ReviewCommentsPanel({
   loading,
   selectedId,
   anchorChecks,
+  suggestedTags,
   onSelect,
   onGoToSource,
   onSetStatus,
   onSetTags,
   onExport,
-  onReply,
+  onShowFoundLocation,
   onDelete,
+  onReply,
 }: ReviewCommentsPanelProps) {
   const [showResolved, setShowResolved] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
   const [editingTagsFor, setEditingTagsFor] = useState<string | null>(null);
   const [activeTags, setActiveTags] = useState<string[]>([]);
-  const [driftedOnly, setDriftedOnly] = useState(false);
+  const [staleOnly, setStaleOnly] = useState(false);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -246,12 +259,13 @@ export function ReviewCommentsPanel({
     [tagCounts],
   );
 
-  const driftedIds = useMemo(() => {
+  // Both outcomes mean the same thing to the reader: this annotation no longer
+  // sits on the text it was written about.
+  const staleIds = useMemo(() => {
     const ids = new Set<string>();
     for (const comment of comments) {
-      if (anchorChecks.get(comment.id)?.status === "drifted") {
-        ids.add(comment.id);
-      }
+      const status = anchorChecks.get(comment.id)?.status;
+      if (status === "drifted" || status === "shifted") ids.add(comment.id);
     }
     return ids;
   }, [comments, anchorChecks]);
@@ -264,8 +278,8 @@ export function ReviewCommentsPanel({
     });
   }, [knownTags]);
   useEffect(() => {
-    if (driftedOnly && driftedIds.size === 0) setDriftedOnly(false);
-  }, [driftedOnly, driftedIds]);
+    if (staleOnly && staleIds.size === 0) setStaleOnly(false);
+  }, [staleOnly, staleIds]);
 
   const visibleComments = useMemo(
     () =>
@@ -276,12 +290,12 @@ export function ReviewCommentsPanel({
             activeTags.length === 0 ||
             (comment.tags ?? []).some((tag) => activeTags.includes(tag)),
         )
-        .filter((comment) => !driftedOnly || driftedIds.has(comment.id))
+        .filter((comment) => !staleOnly || staleIds.has(comment.id))
         .sort((a, b) => {
           if (a.status !== b.status) return a.status === "open" ? -1 : 1;
           return a.anchor.page - b.anchor.page;
         }),
-    [comments, query, showResolved, activeTags, driftedOnly, driftedIds],
+    [comments, query, showResolved, activeTags, staleOnly, staleIds],
   );
   const openCount = comments.filter(
     (comment) => comment.status === "open",
@@ -295,10 +309,10 @@ export function ReviewCommentsPanel({
     if (activeTags.length > 0) {
       parts.push(`tagged ${activeTags.map((tag) => `#${tag}`).join(", ")}`);
     }
-    if (driftedOnly) parts.push("that could not be located in the current PDF");
+    if (staleOnly) parts.push("no longer sitting on the text they were about");
     if (query.trim()) parts.push(`matching "${query.trim()}"`);
     return parts.length > 0 ? parts.join(", ") : null;
-  }, [showResolved, activeTags, driftedOnly, query]);
+  }, [showResolved, activeTags, staleOnly, query]);
 
   /** Step through the list in the order it is displayed. `predicate` narrows
    *  the hop, which is what makes "next open" different from "next". */
@@ -453,23 +467,23 @@ export function ReviewCommentsPanel({
         )}
       </div>
 
-      {(tagCounts.length > 0 || driftedIds.size > 0) && (
+      {(tagCounts.length > 0 || staleIds.size > 0) && (
         <div className="flex flex-wrap gap-1 border-border border-b px-3 py-2">
-          {driftedIds.size > 0 && (
+          {staleIds.size > 0 && (
             <button
               type="button"
               className={cn(
                 "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-tight transition-colors",
-                driftedOnly
+                staleOnly
                   ? "border-amber-500/70 bg-amber-500/15 text-foreground"
                   : "border-amber-500/40 text-amber-600 hover:bg-amber-500/10",
               )}
-              aria-pressed={driftedOnly}
-              title="Annotations that could not be located in the current PDF"
-              onClick={() => setDriftedOnly((value) => !value)}
+              aria-pressed={staleOnly}
+              title="Annotations whose text has moved or gone since this PDF was built"
+              onClick={() => setStaleOnly((value) => !value)}
             >
               <TriangleAlertIcon className="size-3" />
-              {driftedIds.size} drifted
+              {staleIds.size} stale
             </button>
           )}
           {tagCounts.map(({ tag, count }) => (
@@ -481,13 +495,13 @@ export function ReviewCommentsPanel({
               onClick={() => toggleTag(tag)}
             />
           ))}
-          {(activeTags.length > 0 || driftedOnly) && (
+          {(activeTags.length > 0 || staleOnly) && (
             <button
               type="button"
               className="rounded-full px-2 py-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
               onClick={() => {
                 setActiveTags([]);
-                setDriftedOnly(false);
+                setStaleOnly(false);
               }}
             >
               Clear
@@ -510,7 +524,7 @@ export function ReviewCommentsPanel({
                 ? "No annotations yet"
                 : query.trim()
                   ? "Nothing matches this search"
-                  : activeTags.length > 0 || driftedOnly
+                  : activeTags.length > 0 || staleOnly
                     ? "Nothing matches this filter"
                     : "No open annotations"}
             </p>
@@ -522,7 +536,10 @@ export function ReviewCommentsPanel({
         ) : (
           <div className="space-y-2">
             {visibleComments.map((comment) => {
-              const drifted = driftedIds.has(comment.id);
+              const check = anchorChecks.get(comment.id);
+              const stale = staleIds.has(comment.id);
+              const foundAt =
+                check?.status === "shifted" ? check.foundAt : undefined;
               const tags = comment.tags ?? [];
               return (
                 <article
@@ -539,6 +556,7 @@ export function ReviewCommentsPanel({
                   <button
                     type="button"
                     className="block w-full text-left"
+                    aria-label={`Show on page ${comment.anchor.page} in the PDF`}
                     onClick={() => onSelect(comment)}
                   >
                     <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
@@ -551,6 +569,13 @@ export function ReviewCommentsPanel({
                             resolveReviewHighlightColor(comment.color).accent,
                           )}
                         />
+                      ) : comment.kind === "drawing" ? (
+                        <PenLineIcon
+                          className={cn(
+                            "size-3.5",
+                            resolveReviewHighlightColor(comment.color).accent,
+                          )}
+                        />
                       ) : (
                         <CircleIcon className="size-3.5" />
                       )}
@@ -558,10 +583,10 @@ export function ReviewCommentsPanel({
                         {comment.author}
                       </span>
                       <span>p. {comment.anchor.page}</span>
-                      {drifted && (
+                      {stale && (
                         <TriangleAlertIcon
                           className="size-3.5 shrink-0 text-amber-600"
-                          aria-label="Position may be out of date"
+                          aria-label="No longer on the text it was written about"
                         />
                       )}
                       <span className="ml-auto shrink-0">
@@ -580,22 +605,41 @@ export function ReviewCommentsPanel({
                         {comment.anchor.selectedText}
                       </blockquote>
                     )}
-                    {comment.body ? (
-                      <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                        {comment.body}
-                      </p>
-                    ) : comment.kind === "highlight" ? (
-                      <p className="text-muted-foreground text-xs italic">
-                        Highlight
-                      </p>
-                    ) : null}
                   </button>
 
-                  {drifted && (
-                    <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 leading-relaxed dark:text-amber-400">
-                      Could not be found in the current PDF — it is still shown
-                      where it last was, which may no longer be the right place.
+                  {comment.body ? (
+                    <ReviewMarkdown content={comment.body} />
+                  ) : comment.kind === "highlight" ? (
+                    <p className="text-muted-foreground text-xs italic">
+                      Highlight
                     </p>
+                  ) : comment.kind === "drawing" ? (
+                    <p className="text-muted-foreground text-xs italic">
+                      Drawing — reply to add a note
+                    </p>
+                  ) : null}
+
+                  {stale && (
+                    <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 leading-relaxed dark:text-amber-400">
+                      {foundAt ? (
+                        <>
+                          This text has moved to p. {foundAt.page}. The
+                          annotation stays where it was placed.{" "}
+                          <button
+                            type="button"
+                            className="font-medium underline underline-offset-2"
+                            onClick={() => onShowFoundLocation(foundAt)}
+                          >
+                            Show me
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          This text is no longer in the PDF, so the annotation
+                          may not be pointing at what it was written about.
+                        </>
+                      )}
+                    </div>
                   )}
 
                   {tags.length > 0 && (
@@ -619,6 +663,7 @@ export function ReviewCommentsPanel({
                     <TagEditor
                       tags={tags}
                       knownTags={knownTags}
+                      suggestedTags={suggestedTags}
                       onChange={(next) => onSetTags(comment, next)}
                       onClose={() => setEditingTagsFor(null)}
                     />
@@ -637,9 +682,10 @@ export function ReviewCommentsPanel({
                               {formatTimestamp(reply.createdAt)}
                             </span>
                           </div>
-                          <p className="mt-0.5 whitespace-pre-wrap pl-4 leading-relaxed">
-                            {reply.body}
-                          </p>
+                          <ReviewMarkdown
+                            content={reply.body}
+                            className="mt-0.5 pl-4"
+                          />
                         </div>
                       ))}
                     </div>
@@ -754,7 +800,7 @@ function ReplyComposer({
       <Textarea
         value={body}
         onChange={(event) => setBody(event.target.value)}
-        placeholder="Reply…"
+        placeholder="Reply…  **bold**, $x^2$"
         className="min-h-16 resize-y text-sm"
         autoFocus
         onKeyDown={(event) => {
@@ -795,7 +841,8 @@ export interface ReviewCommentDraft {
 
 interface ReviewCommentDialogProps {
   draft: ReviewCommentDraft | null;
-  /** Tags already in use in this project, offered as suggestions. */
+  /** Tags already in use in this project, plus the configured vocabulary,
+   *  offered as suggestions. */
   knownTags: string[];
   onOpenChange: (open: boolean) => void;
   onSave: (body: string, tags: string[]) => void;
@@ -809,15 +856,17 @@ export function ReviewCommentDialog({
 }: ReviewCommentDialogProps) {
   const [body, setBody] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  const [preview, setPreview] = useState(false);
 
   useEffect(() => {
     if (draft) {
       setBody("");
       setTags([]);
+      setPreview(false);
     }
   }, [draft]);
 
-  const suggestions = [...new Set([...knownTags, ...SUGGESTED_REVIEW_TAGS])]
+  const suggestions = [...new Set(knownTags)]
     .filter((tag) => !tags.includes(tag))
     .slice(0, 6);
 
@@ -832,23 +881,45 @@ export function ReviewCommentDialog({
             {draft.anchor.selectedText}
           </blockquote>
         )}
-        <Textarea
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-          placeholder="What should be changed or checked?"
-          className="min-h-28 resize-y"
-          autoFocus
-          onKeyDown={(event) => {
-            if (
-              event.key === "Enter" &&
-              (event.metaKey || event.ctrlKey) &&
-              body.trim()
-            ) {
-              event.preventDefault();
-              onSave(body.trim(), tags);
-            }
-          }}
-        />
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground">
+              Markdown and <span className="font-mono">$math$</span> supported
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={!body.trim()}
+              onClick={() => setPreview((value) => !value)}
+            >
+              {preview ? "Write" : "Preview"}
+            </Button>
+          </div>
+          {preview ? (
+            <div className="min-h-28 rounded-md border border-border bg-muted/30 px-3 py-2">
+              <ReviewMarkdown content={body} />
+            </div>
+          ) : (
+            <Textarea
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              placeholder="What should be changed or checked?"
+              className="min-h-28 resize-y"
+              autoFocus
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  (event.metaKey || event.ctrlKey) &&
+                  body.trim()
+                ) {
+                  event.preventDefault();
+                  onSave(body.trim(), tags);
+                }
+              }}
+            />
+          )}
+        </div>
         <div className="space-y-1.5">
           <div className="flex flex-wrap gap-1">
             {tags.map((tag) => (

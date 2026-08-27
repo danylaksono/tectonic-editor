@@ -1,4 +1,9 @@
 import { useEffect, useState } from "react";
+import {
+  DEFAULT_REVIEW_TAGS,
+  MAX_SUGGESTED_REVIEW_TAGS,
+  parseReviewTags,
+} from "@/lib/review-tags";
 import { listen } from "@tauri-apps/api/event";
 import {
   BookTypeIcon,
@@ -260,6 +265,16 @@ function EditorSection() {
 function ReviewSection() {
   const reviewerName = useSettingsStore((s) => s.reviewerName);
   const setReviewerName = useSettingsStore((s) => s.setReviewerName);
+  const reviewTags = useSettingsStore((s) => s.reviewTags);
+  const setReviewTags = useSettingsStore((s) => s.setReviewTags);
+  // Edited as free text so a tag can be typed in peace; normalising on every
+  // keystroke would eat the space bar halfway through "cite check".
+  const [tagDraft, setTagDraft] = useState(reviewTags.join(", "));
+  useEffect(() => {
+    setTagDraft(reviewTags.join(", "));
+  }, [reviewTags]);
+  const commitTags = () =>
+    setReviewTags(parseReviewTags(tagDraft, MAX_SUGGESTED_REVIEW_TAGS));
 
   return (
     <div className="space-y-3">
@@ -283,6 +298,51 @@ function ReviewSection() {
           Stamped on PDF review comments, highlights, and replies stored in the
           project's <span className="font-mono">review/</span> folder, so peers
           can tell who wrote what.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <label htmlFor="review-tags" className="text-muted-foreground text-xs">
+          Suggested tags
+        </label>
+        <input
+          id="review-tags"
+          type="text"
+          value={tagDraft}
+          onChange={(e) => setTagDraft(e.target.value)}
+          onBlur={commitTags}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitTags();
+            }
+          }}
+          placeholder={DEFAULT_REVIEW_TAGS.join(", ")}
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+        />
+        {reviewTags.length > 0 && (
+          <div className="flex flex-wrap gap-1 pt-0.5">
+            {reviewTags.map((tag) => (
+              <span
+                key={tag}
+                className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="text-[11px] text-muted-foreground leading-snug">
+          Offered as one-click suggestions when tagging an annotation. Separate
+          with commas; any other tag can still be typed on the annotation
+          itself.{" "}
+          <button
+            type="button"
+            className="underline underline-offset-2 hover:text-foreground"
+            onClick={() => setReviewTags([...DEFAULT_REVIEW_TAGS])}
+          >
+            Reset to defaults
+          </button>
         </p>
       </div>
     </div>

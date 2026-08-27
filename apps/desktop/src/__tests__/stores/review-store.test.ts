@@ -274,7 +274,7 @@ describe("useReviewStore", () => {
     expect(useReviewStore.getState().comments[0].tags).toEqual(["weakness"]);
   });
 
-  it("saves re-anchored positions but leaves unchanged annotations alone", async () => {
+  it("records where shifted text was found without moving the annotation", async () => {
     mockReviewDirectory({
       "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
     });
@@ -283,33 +283,27 @@ describe("useReviewStore", () => {
     await useReviewStore.getState().loadProject("/project");
     vi.mocked(writeTextFile).mockClear();
 
-    const moved = { ...savedComment.anchor, page: 5, y: 640 };
+    const foundAt = { page: 5, x: 42, y: 640, width: 120, height: 18 };
     useReviewStore
       .getState()
       .applyAnchorUpdates(
-        [{ id: "review-1", anchor: moved, status: "moved" }],
+        [{ id: "review-1", status: "shifted", foundAt }],
         "fingerprint-b",
       );
 
+    // Where the annotation sits was a deliberate act; the check reports on it
+    // rather than correcting it.
     const [comment] = useReviewStore.getState().comments;
-    expect(comment.anchor.page).toBe(5);
-    // Following the text an annotation was always attached to is not a human
-    // edit, so the timestamp stays put.
+    expect(comment.anchor).toEqual(savedComment.anchor);
     expect(comment.updatedAt).toBe(savedComment.updatedAt);
     expect(useReviewStore.getState().anchorChecks.get("review-1")).toEqual({
       fingerprint: "fingerprint-b",
-      status: "moved",
-    });
-
-    await vi.waitFor(() => {
-      expect(writeTextFile).toHaveBeenCalledWith(
-        "/project/review/dany.json",
-        expect.stringContaining('"page": 5'),
-      );
+      status: "shifted",
+      foundAt,
     });
   });
 
-  it("records a check without writing when nothing moved", async () => {
+  it("never writes to disk from an anchor check", async () => {
     mockReviewDirectory({
       "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
     });
@@ -318,16 +312,19 @@ describe("useReviewStore", () => {
     await useReviewStore.getState().loadProject("/project");
     vi.mocked(writeTextFile).mockClear();
 
-    useReviewStore
-      .getState()
-      .applyAnchorUpdates(
-        [{ id: "review-1", anchor: savedComment.anchor, status: "drifted" }],
-        "fingerprint-b",
-      );
-
-    expect(useReviewStore.getState().anchorChecks.get("review-1")?.status).toBe(
-      "drifted",
+    useReviewStore.getState().applyAnchorUpdates(
+      [
+        {
+          id: "review-1",
+          status: "shifted",
+          foundAt: { page: 5, x: 1, y: 2, width: 3, height: 4 },
+        },
+      ],
+      "fingerprint-b",
     );
+
+    // Recompiling should never churn review/*.json - the annotations did not
+    // change, only what we know about them.
     expect(writeTextFile).not.toHaveBeenCalled();
   });
 
@@ -340,13 +337,96 @@ describe("useReviewStore", () => {
     await useReviewStore.getState().loadProject("/project");
     useReviewStore
       .getState()
-      .applyAnchorUpdates(
-        [{ id: "review-1", anchor: savedComment.anchor, status: "ok" }],
-        "fingerprint-a",
-      );
+      .applyAnchorUpdates([{ id: "review-1", status: "ok" }], "fingerprint-a");
 
     useReviewStore.getState().deleteComment("review-1");
 
     expect(useReviewStore.getState().anchorChecks.has("review-1")).toBe(false);
+  });
+  it("round-trips a drawing annotation", async () => {
+    const drawing = {
+      kind: "drawing",
+      drawing: {
+        tool: "arrow",
+        points: [
+          { x: 10, y: 20 },
+          { x: 60, y: 90 },
+        ],
+        strokeWidth: 2,
+      },
+    };
+    mockReviewDirectory({
+      "dany.json": {
+        version: 2,
+        author: "Dany",
+        annotations: [{ ...savedComment, ...drawing }],
+      },
+    });
+    await useReviewStore.getState().loadProject("/project");
+
+    const [comment] = useReviewStore.getState().comments;
+    expect(comment.kind).toBe("drawing");
+    expect(comment.drawing?.tool).toBe("arrow");
+    expect(comment.drawing?.points).toHaveLength(2);
+  });
+
+  it("rejects a drawing with no stroke, which nobody could see or click", async () => {
+    mockReviewDirectory({
+      "dany.json": {
+        version: 2,
+        author: "Dany",
+        annotations: [
+          { ...savedComment, kind: "drawing" },
+          {
+            ...savedComment,
+            id: "review-2",
+            kind: "drawing",
+            drawing: { tool: "arrow", points: [] },
+          },
+          {
+            ...savedComment,
+            id: "review-3",
+            kind: "drawing",
+            drawing: { tool: "scribble", points: [{ x: 1, y: 2 }] },
+          },
+        ],
+      },
+    });
+    await useReviewStore.getState().loadProject("/project");
+
+    expect(useReviewStore.getState().comments).toEqual([]);
+  });
+
+  it("saves a drawing with the stroke the tool produced", async () => {
+    vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+
+    const created = useReviewStore.getState().addComment({
+      documentRoot: "main.tex",
+      kind: "drawing",
+      color: "blue",
+      body: "",
+      drawing: {
+        tool: "freehand",
+        points: [
+          { x: 1, y: 2 },
+          { x: 3, y: 4 },
+        ],
+      },
+      anchor: savedComment.anchor,
+    });
+
+    expect(created.kind).toBe("drawing");
+    expect(created.drawing?.tool).toBe("freehand");
+    // The file name follows whichever reviewer name resolved, so assert on
+    // what was written rather than where.
+    await vi.waitFor(() => {
+      expect(writeTextFile).toHaveBeenCalledWith(
+        expect.stringContaining("/project/review/"),
+        expect.stringContaining('"freehand"'),
+      );
+    });
   });
 });

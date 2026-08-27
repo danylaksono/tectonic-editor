@@ -11,6 +11,7 @@ import { create } from "zustand";
 import { createLogger } from "@/lib/debug/logger";
 import { useSettingsStore } from "@/stores/settings-store";
 import { dedupeReviewTags } from "@/lib/review-tags";
+import type { ReviewDrawingTool, ReviewPoint } from "@/lib/review-drawing";
 
 const log = createLogger("review");
 const REVIEW_FILE_VERSION = 2;
@@ -40,19 +41,46 @@ export interface ReviewReply {
   createdAt: string;
 }
 
-export type ReviewAnnotationKind = "comment" | "highlight";
+export type ReviewAnnotationKind = "comment" | "highlight" | "drawing";
+
+/** A mark drawn over the page: a scribble, or a shape swept out in one drag.
+ *  Points are page-relative PDF coordinates, the same space as `anchor`. */
+export interface ReviewDrawing {
+  tool: ReviewDrawingTool;
+  /** Freehand carries the whole stroke; the shapes carry the drag's two ends. */
+  points: ReviewPoint[];
+  /** PDF points. Absent means the default width. */
+  strokeWidth?: number;
+}
 
 /** How one annotation's anchor fared against a freshly compiled PDF.
- *  "ok" — still where it was; "moved" — relocated onto the new layout;
- *  "drifted" — it had something to search by and that search failed, so the
- *  stored coordinates may now point at the wrong paragraph; "unverified" —
- *  nothing to locate it by at all, which is not evidence either way. */
-export type ReviewAnchorStatus = "ok" | "moved" | "drifted" | "unverified";
+ *
+ *  "ok" — its text is still under it; "shifted" — its text turned up elsewhere,
+ *  so the annotation now points at the wrong place and we know where the text
+ *  went; "drifted" — its text is gone, so the position is suspect and we cannot
+ *  say where it should be; "unverified" — there was nothing to search by, which
+ *  is not evidence either way.
+ *
+ *  None of these move the annotation. Where it sits is a deliberate act by
+ *  whoever placed it, and this is a report on that placement, not a correction
+ *  to it. */
+export type ReviewAnchorStatus = "ok" | "shifted" | "drifted" | "unverified";
+
+/** Where an annotation's text was found, in unscaled PDF page coordinates. */
+export interface ReviewFoundLocation {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export interface ReviewAnchorUpdate {
   id: string;
-  anchor: ReviewAnchor;
   status: ReviewAnchorStatus;
+  /** Set only for "shifted": where the text is now, so the UI can offer to
+   *  show it without changing what is stored. */
+  foundAt?: ReviewFoundLocation;
 }
 
 /** A request from elsewhere in the app — the editor gutter — to reveal one
@@ -67,6 +95,8 @@ export interface ReviewAnchorCheck {
   /** Fingerprint of the PDF this annotation was last checked against. */
   fingerprint: string;
   status: ReviewAnchorStatus;
+  /** Where the annotation's text turned up, when it turned up elsewhere. */
+  foundAt?: ReviewFoundLocation;
 }
 
 export interface ReviewComment {
@@ -83,6 +113,8 @@ export interface ReviewComment {
   /** Free-form labels, normalised (see lib/review-tags). Absent, not empty,
    *  when untagged — keeps untagged annotations out of everyone's diffs. */
   tags?: string[];
+  /** Set only when kind is "drawing". */
+  drawing?: ReviewDrawing;
   replies: ReviewReply[];
   createdAt: string;
   updatedAt: string;
@@ -110,6 +142,7 @@ interface AddReviewCommentInput {
   kind?: ReviewAnnotationKind;
   color?: string;
   tags?: string[];
+  drawing?: ReviewDrawing;
 }
 
 interface ReviewState {
@@ -131,8 +164,8 @@ interface ReviewState {
   setCommentTags: (id: string, tags: string[]) => void;
   /** Ask the preview to select and scroll to one annotation. */
   requestSelection: (id: string) => void;
-  /** Record the outcome of a re-anchor pass, persisting only the annotations
-   *  that actually moved. */
+  /** Record the outcome of an anchor check. Nothing is written to disk: the
+   *  check is a report, and the annotations themselves are unchanged. */
   applyAnchorUpdates: (
     updates: ReviewAnchorUpdate[],
     fingerprint: string,
@@ -197,12 +230,45 @@ function isReviewReply(value: unknown): value is ReviewReply {
   );
 }
 
+const DRAWING_TOOLS: ReviewDrawingTool[] = [
+  "freehand",
+  "line",
+  "arrow",
+  "box",
+  "ellipse",
+];
+
+function isReviewPoint(value: unknown): value is ReviewPoint {
+  if (!value || typeof value !== "object") return false;
+  const point = value as Partial<ReviewPoint>;
+  return typeof point.x === "number" && typeof point.y === "number";
+}
+
+function isReviewDrawing(value: unknown): value is ReviewDrawing {
+  if (!value || typeof value !== "object") return false;
+  const drawing = value as Partial<ReviewDrawing>;
+  return (
+    DRAWING_TOOLS.includes(drawing.tool as ReviewDrawingTool) &&
+    Array.isArray(drawing.points) &&
+    drawing.points.length > 0 &&
+    drawing.points.every(isReviewPoint) &&
+    (drawing.strokeWidth === undefined ||
+      typeof drawing.strokeWidth === "number")
+  );
+}
+
 function isReviewComment(value: unknown): value is ReviewComment {
   if (!value || typeof value !== "object") return false;
   const comment = value as Partial<ReviewComment>;
+  // A drawing with no stroke would be an annotation nobody can see or click.
+  if (comment.kind === "drawing" && !isReviewDrawing(comment.drawing)) {
+    return false;
+  }
   return (
     typeof comment.id === "string" &&
-    (comment.kind === "comment" || comment.kind === "highlight") &&
+    (comment.kind === "comment" ||
+      comment.kind === "highlight" ||
+      comment.kind === "drawing") &&
     typeof comment.documentRoot === "string" &&
     typeof comment.author === "string" &&
     typeof comment.body === "string" &&
@@ -394,6 +460,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       anchor: input.anchor,
       color: input.color,
       tags: input.tags?.length ? dedupeReviewTags(input.tags) : undefined,
+      drawing: input.drawing,
       replies: [],
       createdAt: now,
       updatedAt: now,
@@ -481,27 +548,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   applyAnchorUpdates: (updates, fingerprint) => {
     if (updates.length === 0) return;
     const anchorChecks = new Map(get().anchorChecks);
-    const moved = new Map<string, ReviewAnchor>();
     for (const update of updates) {
-      anchorChecks.set(update.id, { fingerprint, status: update.status });
-      if (update.status === "moved") moved.set(update.id, update.anchor);
+      anchorChecks.set(update.id, {
+        fingerprint,
+        status: update.status,
+        foundAt: update.foundAt,
+      });
     }
-    if (moved.size === 0) {
-      set({ anchorChecks });
-      return;
-    }
-    const touchedAuthors = new Set<string>();
-    const comments = get().comments.map((comment) => {
-      const anchor = moved.get(comment.id);
-      if (!anchor) return comment;
-      touchedAuthors.add(comment.author);
-      // updatedAt tracks human edits — following the text the annotation was
-      // always attached to is not one, so it is left alone.
-      return { ...comment, anchor };
-    });
-    set({ comments, anchorChecks });
-    const projectRoot = get().projectRoot;
-    if (projectRoot) persistAuthors(projectRoot, comments, touchedAuthors);
+    set({ anchorChecks });
   },
 
   deleteComment: (id) => {

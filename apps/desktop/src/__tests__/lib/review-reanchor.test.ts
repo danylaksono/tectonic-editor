@@ -54,7 +54,7 @@ describe("pagesNearest", () => {
 });
 
 describe("reanchorAnnotations", () => {
-  it("follows text that moved to another page", async () => {
+  it("never returns a replacement anchor — the annotation stays put", async () => {
     const searchPage = searchStub(14, [{ x: 90, y: 400, w: 310, h: 16 }]);
     const updates = await reanchorAnnotations([makeComment()], {
       pageCount: 40,
@@ -63,8 +63,19 @@ describe("reanchorAnnotations", () => {
     });
 
     expect(updates).toHaveLength(1);
-    expect(updates[0].status).toBe("moved");
-    expect(updates[0].anchor).toMatchObject({
+    expect(updates[0]).not.toHaveProperty("anchor");
+  });
+
+  it("reports where text that moved to another page turned up", async () => {
+    const searchPage = searchStub(14, [{ x: 90, y: 400, w: 310, h: 16 }]);
+    const updates = await reanchorAnnotations([makeComment()], {
+      pageCount: 40,
+      searchPage,
+      forwardSearch: noForwardSearch,
+    });
+
+    expect(updates[0].status).toBe("shifted");
+    expect(updates[0].foundAt).toEqual({
       page: 14,
       x: 90,
       y: 400,
@@ -74,21 +85,45 @@ describe("reanchorAnnotations", () => {
     expect(noForwardSearch).not.toHaveBeenCalled();
   });
 
-  it("reports text found where it already was as unchanged, so nothing is rewritten", async () => {
-    const comment = makeComment();
+  it("reports text still under the annotation as ok", async () => {
     const searchPage = searchStub(12, [{ x: 100, y: 200, w: 300, h: 14 }]);
-    const updates = await reanchorAnnotations([comment], {
+    const updates = await reanchorAnnotations([makeComment()], {
       pageCount: 40,
       searchPage,
       forwardSearch: noForwardSearch,
     });
 
     expect(updates[0].status).toBe("ok");
-    expect(updates[0].anchor).toBe(comment.anchor);
+    expect(updates[0].foundAt).toBeUndefined();
+  });
+
+  it("does not call a highlight drawn loosely around its words a shift", async () => {
+    // Swept box starts a few points above and left of the text inside it —
+    // the normal result of dragging a highlighter, not movement.
+    const searchPage = searchStub(12, [{ x: 106, y: 208, w: 280, h: 12 }]);
+    const updates = await reanchorAnnotations([makeComment()], {
+      pageCount: 40,
+      searchPage,
+      forwardSearch: noForwardSearch,
+    });
+
+    expect(updates[0].status).toBe("ok");
+  });
+
+  it("treats a move down the same page as a shift", async () => {
+    const searchPage = searchStub(12, [{ x: 100, y: 480, w: 300, h: 14 }]);
+    const updates = await reanchorAnnotations([makeComment()], {
+      pageCount: 40,
+      searchPage,
+      forwardSearch: noForwardSearch,
+    });
+
+    expect(updates[0].status).toBe("shifted");
+    expect(updates[0].foundAt?.y).toBe(480);
   });
 
   it("spans every rectangle of a match that wraps across lines", async () => {
-    const searchPage = searchStub(12, [
+    const searchPage = searchStub(14, [
       { x: 300, y: 200, w: 100, h: 14 },
       { x: 100, y: 216, w: 120, h: 14 },
     ]);
@@ -98,7 +133,7 @@ describe("reanchorAnnotations", () => {
       forwardSearch: noForwardSearch,
     });
 
-    expect(updates[0].anchor).toMatchObject({
+    expect(updates[0].foundAt).toMatchObject({
       x: 100,
       y: 200,
       width: 300,
@@ -129,15 +164,8 @@ describe("reanchorAnnotations", () => {
     expect(forwardSearch).toHaveBeenCalledWith([
       { file: "chapters/method.tex", line: 42, column: 0 },
     ]);
-    expect(updates[0].status).toBe("moved");
-    // A pin keeps its own size — SyncTeX reports the size of the text line.
-    expect(updates[0].anchor).toMatchObject({
-      page: 9,
-      x: 72,
-      y: 512,
-      width: 18,
-      height: 18,
-    });
+    expect(updates[0].status).toBe("shifted");
+    expect(updates[0].foundAt?.page).toBe(9);
   });
 
   it("asks SyncTeX for every unplaced annotation in one batch", async () => {
@@ -170,10 +198,10 @@ describe("reanchorAnnotations", () => {
 
     expect(forwardSearch).toHaveBeenCalledTimes(1);
     expect(updates.find((u) => u.id === "a")?.status).toBe("drifted");
-    expect(updates.find((u) => u.id === "b")?.status).toBe("moved");
+    expect(updates.find((u) => u.id === "b")?.status).toBe("shifted");
   });
 
-  it("marks an annotation drifted when neither route can place it", async () => {
+  it("marks an annotation drifted when neither route can find its text", async () => {
     const updates = await reanchorAnnotations([makeComment()], {
       pageCount: 40,
       searchPage: vi.fn(async () => []),
@@ -181,10 +209,10 @@ describe("reanchorAnnotations", () => {
     });
 
     expect(updates[0].status).toBe("drifted");
-    expect(updates[0].anchor.page).toBe(12);
+    expect(updates[0].foundAt).toBeUndefined();
   });
 
-  it("keeps the annotation rather than throwing when a page cannot be read", async () => {
+  it("keeps checking rather than throwing when a page cannot be read", async () => {
     const searchPage = vi.fn(async (pageIndex: number) => {
       if (pageIndex === 11) throw new Error("bad page");
       return pageIndex === 12 ? [[{ x: 1, y: 2, w: 3, h: 4 }]] : [];
@@ -196,8 +224,8 @@ describe("reanchorAnnotations", () => {
       forwardSearch: noForwardSearch,
     });
 
-    expect(updates[0].status).toBe("moved");
-    expect(updates[0].anchor.page).toBe(13);
+    expect(updates[0].status).toBe("shifted");
+    expect(updates[0].foundAt?.page).toBe(13);
   });
 
   it("reports an annotation with nothing to locate it by as unverified, not drifted", async () => {

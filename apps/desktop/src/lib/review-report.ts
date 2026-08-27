@@ -64,7 +64,7 @@ function renderEntry(comment: ReviewComment): string {
   const heading = [
     `p. ${comment.anchor.page}`,
     comment.author,
-    comment.kind === "highlight" ? "highlight" : "comment",
+    comment.kind,
     comment.status,
   ].join(" · ");
   lines.push(`### ${heading}`);
@@ -79,6 +79,10 @@ function renderEntry(comment: ReviewComment): string {
     lines.push("", comment.body);
   } else if (comment.kind === "highlight") {
     lines.push("", "*Highlighted, no note.*");
+  } else if (comment.kind === "drawing") {
+    // The mark itself cannot travel into Markdown, so the report says one was
+    // made and where, rather than silently dropping the annotation.
+    lines.push("", `*Drawn on the page (${comment.drawing?.tool ?? "mark"}).*`);
   }
   if (comment.anchor.source) {
     const { file, line } = comment.anchor.source;

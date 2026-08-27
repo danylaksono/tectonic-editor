@@ -4,6 +4,7 @@ import {
   CheckIcon,
   ClipboardPasteIcon,
   FileTextIcon,
+  LibraryIcon,
   SearchIcon,
 } from "lucide-react";
 import type { ProjectFile } from "@/stores/document-store";
@@ -32,6 +33,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { BibtexPasteForm } from "@/components/workspace/bibtex-paste-form";
+import { ZoteroSearchForm } from "@/components/workspace/zotero-search-form";
+import { useZoteroStore } from "@/stores/zotero-store";
 import { useResizableDialog } from "@/hooks/use-resizable-dialog";
 
 interface CitationPickerProps {
@@ -108,7 +111,10 @@ export function CitationPicker({
   const [prefix, setPrefix] = useState("");
   const [locator, setLocator] = useState("");
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
-  const [mode, setMode] = useState<"references" | "paste">("references");
+  const [mode, setMode] = useState<"references" | "paste" | "zotero">(
+    "references",
+  );
+  const zoteroConnected = useZoteroStore((state) => state.isAuthenticated);
 
   useEffect(() => {
     if (open) setCommand(getDefaultCitationCommand(citationPackage));
@@ -157,24 +163,51 @@ export function CitationPicker({
         <DialogHeader className="flex-row items-center justify-between border-border border-b px-4 pt-4 pb-3">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <BookMarkedIcon className="size-4 text-muted-foreground" />
-            {mode === "paste" ? "Add reference from BibTeX" : "Insert Citation"}
+            {mode === "paste"
+              ? "Add reference from BibTeX"
+              : mode === "zotero"
+                ? "Search Zotero library"
+                : "Insert Citation"}
           </DialogTitle>
           {mode === "references" && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7"
-              onClick={() => setMode("paste")}
-            >
-              <ClipboardPasteIcon className="size-3.5" />
-              Paste BibTeX
-            </Button>
+            <div className="flex items-center gap-2">
+              {zoteroConnected && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
+                  onClick={() => setMode("zotero")}
+                >
+                  <LibraryIcon className="size-3.5" />
+                  Search Zotero
+                </Button>
+              )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7"
+                onClick={() => setMode("paste")}
+              >
+                <ClipboardPasteIcon className="size-3.5" />
+                Paste BibTeX
+              </Button>
+            </div>
           )}
         </DialogHeader>
 
         {mode === "paste" ? (
           <BibtexPasteForm
+            files={files}
+            onBack={() => setMode("references")}
+            onImported={(keys) => {
+              setSelectedKeys(keys);
+              setMode("references");
+            }}
+          />
+        ) : mode === "zotero" ? (
+          <ZoteroSearchForm
             files={files}
             onBack={() => setMode("references")}
             onImported={(keys) => {

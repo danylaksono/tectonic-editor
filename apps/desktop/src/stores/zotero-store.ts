@@ -3,15 +3,20 @@ import { persist } from "zustand/middleware";
 import {
   validateApiKey,
   validateDesktop,
+  probeDesktopItems,
   fetchCollections,
   importCollection,
   syncCollection,
+  searchZoteroItems,
+  fetchCollectionItems,
   startOAuth,
   completeOAuth,
   cancelOAuth,
   type ZoteroConnection,
   type ZoteroConnectionMode,
   type ZoteroCollection,
+  type ZoteroSearchResult,
+  type ZoteroItemPage,
 } from "@/lib/zotero-api";
 import { useDocumentStore } from "@/stores/document-store";
 import { createFileOnDisk } from "@/lib/tauri/fs";
@@ -59,8 +64,11 @@ interface ZoteroState {
   collections: ZoteroCollection[];
   isLoadingCollections: boolean;
   desktopStatus: ZoteroDesktopStatus;
+  /** null = not probed. false = Zotero Desktop answers collections but not items. */
+  desktopItemsAvailable: boolean | null;
 
   checkDesktop: () => Promise<boolean>;
+  probeDesktopCapabilities: () => Promise<void>;
   connectWithDesktop: () => Promise<boolean>;
   connectWithOAuth: () => Promise<boolean>;
   connectWithApiKey: (apiKey: string) => Promise<boolean>;
@@ -68,6 +76,15 @@ interface ZoteroState {
   disconnect: () => void;
   revalidate: () => Promise<void>;
   loadCollections: () => Promise<void>;
+  searchLibrary: (
+    query: string,
+    limit?: number,
+  ) => Promise<ZoteroSearchResult[]>;
+  browseCollection: (
+    collectionKey: string | null,
+    start?: number,
+    limit?: number,
+  ) => Promise<ZoteroItemPage>;
   importCollectionToBib: (
     collectionKey: string | null,
     name: string,
@@ -136,12 +153,14 @@ export const useZoteroStore = create<ZoteroState>()(
       collections: [],
       isLoadingCollections: false,
       desktopStatus: "unknown",
+      desktopItemsAvailable: null,
 
       checkDesktop: async () => {
         set({ desktopStatus: "checking" });
         try {
           await validateDesktop();
           set({ desktopStatus: "available" });
+          void get().probeDesktopCapabilities();
           return true;
         } catch (err) {
           const message =
@@ -153,6 +172,16 @@ export const useZoteroStore = create<ZoteroState>()(
           });
           return false;
         }
+      },
+
+      probeDesktopCapabilities: async () => {
+        const { available, error } = await probeDesktopItems();
+        if (!available) {
+          log.warn("Zotero Desktop cannot serve items", {
+            error: String(error),
+          });
+        }
+        set({ desktopItemsAvailable: available });
       },
 
       connectWithDesktop: async () => {
@@ -173,6 +202,7 @@ export const useZoteroStore = create<ZoteroState>()(
             desktopStatus: "available",
           });
           get().loadCollections();
+          void get().probeDesktopCapabilities();
           return true;
         } catch (err) {
           const message =
@@ -252,6 +282,7 @@ export const useZoteroStore = create<ZoteroState>()(
           isAuthenticated: false,
           error: null,
           collections: [],
+          desktopItemsAvailable: null,
         });
       },
 
@@ -276,6 +307,7 @@ export const useZoteroStore = create<ZoteroState>()(
             error: null,
           });
           get().loadCollections();
+          if (creds.mode === "desktop") void get().probeDesktopCapabilities();
         } catch (err) {
           log.warn("Revalidation failed", { error: String(err) });
           const message =
@@ -305,6 +337,18 @@ export const useZoteroStore = create<ZoteroState>()(
           log.error("Failed to load collections", { error: String(err) });
           set({ isLoadingCollections: false });
         }
+      },
+
+      searchLibrary: async (query, limit) => {
+        const connection = getConnection(get());
+        if (!connection) throw new Error("No Zotero library is connected");
+        return searchZoteroItems(connection, query, limit);
+      },
+
+      browseCollection: async (collectionKey, start, limit) => {
+        const connection = getConnection(get());
+        if (!connection) throw new Error("No Zotero library is connected");
+        return fetchCollectionItems(connection, collectionKey, start, limit);
       },
 
       importCollectionToBib: async (collectionKey, name) => {

@@ -41,6 +41,7 @@ import { useZoteroStore, type CollectionSyncInfo } from "@/stores/zotero-store";
 import { resolveTexRoot, useDocumentStore } from "@/stores/document-store";
 import { cn } from "@/lib/utils";
 import { ExternalBibliographySources } from "@/components/workspace/external-bibliography-sources";
+import { ZoteroCollectionBrowser } from "@/components/workspace/zotero-collection-browser";
 import { DuplicateBibliographyDialog } from "@/components/workspace/duplicate-bibliography-dialog";
 import {
   buildSmartDuplicateCleanupPrompt,
@@ -76,6 +77,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const MYLIB_KEY = "__my_library__";
+
+function storeKeyFor(collectionKey: string | null): string {
+  return collectionKey ?? MYLIB_KEY;
+}
 
 export function ReferencesPanel() {
   return (
@@ -726,12 +731,20 @@ function formatUseCount(count: number) {
   return `${count} ${count === 1 ? "time" : "times"}`;
 }
 
+/** A collection the user drilled into, shown item by item. */
+interface BrowseTarget {
+  key: string | null;
+  name: string;
+  syncedBibFileName?: string;
+}
+
 function LibrarySourcesView() {
   const isAuthenticated = useZoteroStore((state) => state.isAuthenticated);
   const connectionMode = useZoteroStore((state) => state.connectionMode);
   const desktopStatus = useZoteroStore((state) => state.desktopStatus);
   const checkDesktop = useZoteroStore((state) => state.checkDesktop);
   const revalidate = useZoteroStore((state) => state.revalidate);
+  const [browsing, setBrowsing] = useState<BrowseTarget | null>(null);
 
   useEffect(() => {
     if (connectionMode) {
@@ -741,9 +754,28 @@ function LibrarySourcesView() {
     }
   }, [checkDesktop, connectionMode, desktopStatus, revalidate]);
 
+  useEffect(() => {
+    if (!isAuthenticated) setBrowsing(null);
+  }, [isAuthenticated]);
+
+  if (isAuthenticated && browsing) {
+    return (
+      <ZoteroCollectionBrowser
+        collectionKey={browsing.key}
+        name={browsing.name}
+        syncedBibFileName={browsing.syncedBibFileName}
+        onBack={() => setBrowsing(null)}
+      />
+    );
+  }
+
   return (
     <div className="h-full overflow-y-auto">
-      {isAuthenticated ? <ConnectedZoteroView /> : <ConnectLibraryView />}
+      {isAuthenticated ? (
+        <ConnectedZoteroView onBrowse={setBrowsing} />
+      ) : (
+        <ConnectLibraryView />
+      )}
       <ExternalBibliographySources />
     </div>
   );
@@ -905,7 +937,11 @@ function DesktopStatus({
   );
 }
 
-function ConnectedZoteroView() {
+function ConnectedZoteroView({
+  onBrowse,
+}: {
+  onBrowse: (target: BrowseTarget) => void;
+}) {
   const connectionMode = useZoteroStore((state) => state.connectionMode);
   const username = useZoteroStore((state) => state.username);
   const isLoadingCollections = useZoteroStore(
@@ -933,10 +969,30 @@ function ConnectedZoteroView() {
   const syncedCollections = projectRoot
     ? (allSyncedCollections[projectRoot] ?? {})
     : {};
+  const desktopItemsAvailable = useZoteroStore(
+    (state) => state.desktopItemsAvailable,
+  );
+  const [collectionQuery, setCollectionQuery] = useState("");
   const flattenedCollections = useMemo(
     () => flattenCollections(collections),
     [collections],
   );
+  const visibleCollections = useMemo(
+    () => filterCollectionTree(flattenedCollections, collectionQuery),
+    [collectionQuery, flattenedCollections],
+  );
+  const showMyLibrary =
+    !collectionQuery.trim() ||
+    "my library".includes(collectionQuery.trim().toLowerCase());
+  const desktopItemsBroken =
+    connectionMode === "desktop" && desktopItemsAvailable === false;
+
+  const browseCollection = (key: string | null, name: string) =>
+    onBrowse({
+      key,
+      name,
+      syncedBibFileName: syncedCollections[storeKeyFor(key)]?.bibFileName,
+    });
 
   return (
     <div className="flex flex-col">
@@ -998,6 +1054,27 @@ function ConnectedZoteroView() {
         </DropdownMenu>
       </div>
 
+      {desktopItemsBroken && (
+        <div className="mx-2 mt-2 space-y-1.5 rounded bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700 leading-relaxed dark:text-amber-400">
+          <p className="flex items-start gap-1">
+            <AlertCircleIcon className="mt-px size-3 shrink-0" />
+            <span>
+              Zotero Desktop is listing collections but returns HTTP 500 for
+              item data, so importing a bibliography will fail. Restart or
+              update Zotero, or connect Zotero Cloud instead.
+            </span>
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 text-[10px]"
+            onClick={connectWithOAuth}
+          >
+            <CloudIcon className="size-3" />
+            Use Zotero Cloud
+          </Button>
+        </div>
+      )}
       {error && (
         <div className="mx-2 mt-2 rounded bg-destructive/10 px-2 py-1 text-[10px] text-destructive">
           {error}
@@ -1012,24 +1089,50 @@ function ConnectedZoteroView() {
         </div>
       )}
 
+      <div className="px-2 pt-2">
+        <div className="relative">
+          <SearchIcon className="absolute top-1/2 left-2 size-3 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={collectionQuery}
+            onChange={(event) => setCollectionQuery(event.target.value)}
+            className="h-7 pl-7 text-xs"
+            placeholder="Filter collections"
+            aria-label="Filter Zotero collections"
+          />
+          {collectionQuery && (
+            <button
+              type="button"
+              className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onClick={() => setCollectionQuery("")}
+              aria-label="Clear collection filter"
+            >
+              <XIcon className="size-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="py-1">
-        <CollectionRow
-          name="My Library"
-          icon={<LibraryIcon className="size-3.5" />}
-          syncInfo={syncedCollections[MYLIB_KEY]}
-          isSyncing={isSyncing === MYLIB_KEY}
-          onImport={() => importCollectionToBib(null, "My Library")}
-          onSync={() => syncCollectionBib(null)}
-          onRemove={() => removeCollection(null)}
-          disabled={!!isSyncing}
-        />
+        {showMyLibrary && (
+          <CollectionRow
+            name="My Library"
+            icon={<LibraryIcon className="size-3.5" />}
+            syncInfo={syncedCollections[MYLIB_KEY]}
+            isSyncing={isSyncing === MYLIB_KEY}
+            onOpen={() => browseCollection(null, "My Library")}
+            onImport={() => importCollectionToBib(null, "My Library")}
+            onSync={() => syncCollectionBib(null)}
+            onRemove={() => removeCollection(null)}
+            disabled={!!isSyncing}
+          />
+        )}
         {isLoadingCollections ? (
           <div className="flex items-center gap-1 px-2 py-2 text-muted-foreground text-xs">
             <LoaderIcon className="size-3 animate-spin" />
             Loading collections…
           </div>
         ) : (
-          flattenedCollections.map(({ collection, depth }) => (
+          visibleCollections.map(({ collection, depth }) => (
             <CollectionRow
               key={collection.key}
               name={collection.name}
@@ -1038,6 +1141,7 @@ function ConnectedZoteroView() {
               depth={depth}
               syncInfo={syncedCollections[collection.key]}
               isSyncing={isSyncing === collection.key}
+              onOpen={() => browseCollection(collection.key, collection.name)}
               onImport={() =>
                 importCollectionToBib(collection.key, collection.name)
               }
@@ -1047,6 +1151,13 @@ function ConnectedZoteroView() {
             />
           ))
         )}
+        {!isLoadingCollections &&
+          !showMyLibrary &&
+          visibleCollections.length === 0 && (
+            <p className="px-2 py-2 text-[10px] text-muted-foreground">
+              No collection matches “{collectionQuery.trim()}”
+            </p>
+          )}
       </div>
     </div>
   );
@@ -1082,6 +1193,31 @@ export function flattenCollections(
   return flattened;
 }
 
+/**
+ * Narrow the flattened tree to collections matching `query`, keeping the
+ * ancestors of every match so nesting still reads correctly.
+ */
+export function filterCollectionTree(
+  flattened: Array<{ collection: ZoteroCollection; depth: number }>,
+  query: string,
+): Array<{ collection: ZoteroCollection; depth: number }> {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return flattened;
+
+  const keep = new Set<string>();
+  const ancestors: ZoteroCollection[] = [];
+  for (const { collection, depth } of flattened) {
+    ancestors.length = depth;
+    ancestors[depth] = collection;
+    if (collection.name.toLowerCase().includes(needle)) {
+      for (const ancestor of ancestors) {
+        if (ancestor) keep.add(ancestor.key);
+      }
+    }
+  }
+  return flattened.filter(({ collection }) => keep.has(collection.key));
+}
+
 function CollectionRow({
   name,
   icon,
@@ -1089,6 +1225,7 @@ function CollectionRow({
   depth = 0,
   syncInfo,
   isSyncing,
+  onOpen,
   onImport,
   onSync,
   onRemove,
@@ -1100,6 +1237,7 @@ function CollectionRow({
   depth?: number;
   syncInfo?: CollectionSyncInfo;
   isSyncing: boolean;
+  onOpen: () => void;
   onImport: () => void;
   onSync: () => void;
   onRemove: () => void;
@@ -1113,9 +1251,16 @@ function CollectionRow({
       style={{ paddingLeft: `${8 + depth * 12}px` }}
     >
       <span className="shrink-0 text-muted-foreground">{icon}</span>
-      <div className="min-w-0 flex-1">
+      <button
+        type="button"
+        className="min-w-0 flex-1 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={onOpen}
+        title={`Browse ${name} in Zotero`}
+      >
         <div className="flex items-center gap-1">
-          <span className="truncate text-foreground text-xs">{name}</span>
+          <span className="truncate text-foreground text-xs group-hover:underline">
+            {name}
+          </span>
           {isSynced && (
             <CheckIcon className="size-2.5 shrink-0 text-muted-foreground" />
           )}
@@ -1127,7 +1272,7 @@ function CollectionRow({
               ? "Whole library"
               : `${itemCount} ${itemCount === 1 ? "item" : "items"}`}
         </p>
-      </div>
+      </button>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
         {isSynced ? (
           <>

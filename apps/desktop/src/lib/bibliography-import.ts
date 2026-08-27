@@ -3,7 +3,13 @@ import {
   applyProjectEditTransaction,
   type ProjectTextEdit,
 } from "@/lib/project-edit-transaction";
-import { useDocumentStore } from "@/stores/document-store";
+import {
+  parseBibEntries,
+  parseBibtexSourceEntries,
+  replaceBibtexEntryKey,
+} from "@/lib/bibtex";
+import { tidyBibEntrySource } from "@/lib/bibtex-entries";
+import { useDocumentStore, type ProjectFile } from "@/stores/document-store";
 import { createFileOnDisk, getUniqueTargetName } from "@/lib/tauri/fs";
 
 export interface CitationCandidate {
@@ -22,6 +28,97 @@ export interface CitationCandidate {
   url: string;
   rawMetadata: string;
   fromCache: boolean;
+}
+
+/** A pending import: the entry's own key, plus the key it will actually get. */
+export interface PreparedBibtexEntry {
+  originalKey: string;
+  key: string;
+  source: string;
+  title?: string;
+}
+
+/**
+ * Parse BibTeX and assign each entry a key that does not collide with
+ * `existingKeys` or with an earlier entry in the same batch. Conflicts get a
+ * visible numeric suffix rather than silently overwriting anything.
+ *
+ * Pass `tidy` for machine-generated BibTeX (a Zotero export, say), where
+ * matching the project's formatting matters more than preserving the
+ * exporter's. Hand-written source is left alone by default.
+ */
+export function prepareBibtexEntries(
+  source: string,
+  existingKeys: Iterable<string>,
+  { tidy = false }: { tidy?: boolean } = {},
+): PreparedBibtexEntry[] {
+  const used = new Set(existingKeys);
+  return parseBibtexSourceEntries(source).map((entry) => {
+    const originalKey = entry.key;
+    let key = originalKey;
+    let suffix = 2;
+    while (used.has(key)) {
+      key = `${originalKey}${suffix}`;
+      suffix += 1;
+    }
+    used.add(key);
+    const rekeyed =
+      key === originalKey ? entry.source : replaceBibtexEntryKey(entry, key);
+    return {
+      originalKey,
+      key,
+      source: tidy ? tidyBibEntrySource(rekeyed) : rekeyed,
+      title: entry.title,
+    };
+  });
+}
+
+/** Every citation key already defined by the project's .bib files. */
+export function collectExistingCitationKeys(files: ProjectFile[]): Set<string> {
+  return new Set(
+    files
+      .filter((file) => file.type === "bib")
+      .flatMap((file) =>
+        parseBibEntries(file.content ?? "", file.relativePath).map(
+          (entry) => entry.key,
+        ),
+      ),
+  );
+}
+
+/**
+ * The .bib file an import should default to: the one the document actually
+ * declares, else the first bibliography, else a new file.
+ */
+export function defaultBibliographyTarget(files: ProjectFile[]): string {
+  const bibFiles = files.filter((file) => file.type === "bib");
+  const declared = files
+    .filter((file) => file.type === "tex")
+    .flatMap((file) => {
+      const source = file.content ?? "";
+      const values = [
+        ...source.matchAll(/\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}/gi),
+        ...source.matchAll(/\\bibliography\{([^}]+)\}/gi),
+      ];
+      return values.flatMap((match) => match[1].split(","));
+    })
+    .map((value) => {
+      const trimmed = value.trim().replace(/\\/g, "/");
+      return trimmed.toLowerCase().endsWith(".bib")
+        ? trimmed
+        : `${trimmed}.bib`;
+    });
+  return (
+    bibFiles.find((file) =>
+      declared.some(
+        (path) =>
+          file.relativePath.toLowerCase() === path.toLowerCase() ||
+          file.name.toLowerCase() === path.toLowerCase(),
+      ),
+    )?.id ??
+    bibFiles[0]?.id ??
+    "__new__"
+  );
 }
 
 export function lookupReference(identifier: string, refresh = false) {

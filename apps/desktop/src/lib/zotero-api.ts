@@ -30,9 +30,15 @@ export interface ZoteroCollection {
   itemCount: number;
 }
 
+/** One imported item: the Zotero item key and the BibTeX Zotero exported. */
+export interface ZoteroBibtexEntry {
+  itemKey: string;
+  bibtex: string;
+}
+
 /** Result of importing a collection */
 export interface CollectionImportResult {
-  bibtex: string;
+  entries: ZoteroBibtexEntry[];
   libraryVersion: number;
   keyMap: Record<string, string>;
   totalItems: number;
@@ -229,8 +235,6 @@ export async function fetchCollections(
 export interface ZoteroSearchResult {
   /** Zotero item key, stable across searches */
   key: string;
-  /** Citation key from the item's BibTeX export */
-  citekey: string;
   title: string;
   creators: string;
   year: string;
@@ -287,7 +291,6 @@ function mapZoteroItems(items: RawZoteroItem[]): ZoteroSearchResult[] {
     return [
       {
         key: item.key,
-        citekey: extractCitekey(bibtex),
         title: data.title?.trim() || item.key,
         creators: formatCreators(data.creators),
         year: extractYear(data.date),
@@ -385,7 +388,7 @@ export async function importCollection(
     ? `/users/${connection.userID}/collections/${collectionKey}/items/top`
     : `/users/${connection.userID}/items/top`;
 
-  let allBibtex = "";
+  const entries: ZoteroBibtexEntry[] = [];
   const keyMap: Record<string, string> = {};
   let start = 0;
   const limit = 100;
@@ -412,11 +415,11 @@ export async function importCollection(
     if (items.length === 0) break;
 
     for (const item of items) {
-      const bibtex = item.bibtex ?? "";
-      if (!bibtex.trim()) continue;
+      const bibtex = item.bibtex?.trim() ?? "";
+      if (!bibtex) continue;
       const citekey = extractCitekey(bibtex);
       if (citekey) keyMap[item.key] = citekey;
-      allBibtex += (allBibtex ? "\n\n" : "") + bibtex;
+      entries.push({ itemKey: item.key, bibtex });
     }
 
     start += limit;
@@ -424,7 +427,7 @@ export async function importCollection(
     if (start >= total) break;
   }
 
-  return { bibtex: allBibtex, libraryVersion, keyMap, totalItems: total };
+  return { entries, libraryVersion, keyMap, totalItems: total };
 }
 
 // ─── Incremental Sync ───
@@ -452,13 +455,11 @@ export async function syncCollection(
   const result = await importCollection(connection, collectionKey, onProgress);
 
   return {
-    updatedEntries: Object.entries(result.keyMap).map(([key, citekey]) => {
-      // Extract the bibtex for this citekey from the full bibtex string
-      const bibtexEntries = result.bibtex.split(/\n(?=@)/);
-      const entry =
-        bibtexEntries.find((e) => extractCitekey(e) === citekey) ?? "";
-      return { key, citekey, bibtex: entry };
-    }),
+    updatedEntries: result.entries.map((entry) => ({
+      key: entry.itemKey,
+      citekey: extractCitekey(entry.bibtex),
+      bibtex: entry.bibtex,
+    })),
     deletedKeys: [],
     libraryVersion: result.libraryVersion,
   };

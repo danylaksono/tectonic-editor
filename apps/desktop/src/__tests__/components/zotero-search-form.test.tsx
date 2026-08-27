@@ -17,13 +17,18 @@ const bibFile = {
 
 const result: ZoteroSearchResult = {
   key: "ABCD1234",
-  citekey: "doe2024spatial",
   title: "Spatial models",
   creators: "Doe et al.",
   year: "2024",
   itemType: "journalArticle",
   publication: "Journal of Geography",
-  bibtex: "@article{doe2024spatial,\n  title = {Spatial models}\n}",
+  bibtex: [
+    "@article{doeSpatialModels2024,",
+    "  author = {Doe, Jane},",
+    "  title = {Spatial models},",
+    "  year = {2024}",
+    "}",
+  ].join("\n"),
 };
 
 function connect(searchLibrary: () => Promise<ZoteroSearchResult[]>) {
@@ -94,8 +99,31 @@ describe("ZoteroSearchForm", () => {
     expect(await screen.findByText("Zotero is asleep")).toBeTruthy();
   });
 
+  it("names each result by the key it will carry in the project", async () => {
+    connect(vi.fn(async () => [result]));
+    const user = userEvent.setup();
+    render(
+      <ZoteroSearchForm
+        files={[bibFile]}
+        onBack={vi.fn()}
+        onImported={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Search Zotero library"), "spatial");
+    expect(await screen.findByText("doe2024spatial")).toBeTruthy();
+  });
+
   it("marks a result the project already cites", async () => {
-    connect(vi.fn(async () => [{ ...result, citekey: "existing2020" }]));
+    connect(
+      vi.fn(async () => [
+        {
+          ...result,
+          title: "Already Here",
+          bibtex: result.bibtex.replace("Spatial models", "Already Here"),
+        },
+      ]),
+    );
     const user = userEvent.setup();
     render(
       <ZoteroSearchForm

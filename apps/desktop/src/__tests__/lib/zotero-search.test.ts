@@ -75,12 +75,11 @@ describe("searchZoteroItems", () => {
     expect(requestedUrl(fetchMock).searchParams.get("limit")).toBe("5");
   });
 
-  it("maps an item to its citekey, year and publication", async () => {
+  it("maps an item to its title, year and publication", async () => {
     mockZoteroResponse([journalArticle]);
     const [result] = await searchZoteroItems(connection, "spatial");
     expect(result).toMatchObject({
       key: "ABCD1234",
-      citekey: "doe2024spatial",
       title: "Spatial models",
       year: "2024",
       itemType: "journalArticle",

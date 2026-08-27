@@ -98,7 +98,6 @@ describe("fetchCollectionItems", () => {
     const [mapped] = (await fetchCollectionItems(connection, null)).items;
     expect(mapped).toMatchObject({
       key: "ABCD1234",
-      citekey: "doe2024spatial",
       title: "Spatial models",
       creators: "Doe",
       year: "2024",

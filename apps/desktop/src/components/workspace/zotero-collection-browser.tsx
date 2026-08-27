@@ -19,10 +19,12 @@ import {
 } from "@/components/ui/select";
 import {
   appendBibtexSource,
-  collectExistingCitationKeys,
+  collectProjectCitations,
   createBibliographyFromSource,
   defaultBibliographyTarget,
+  findExistingCitationKey,
   prepareBibtexEntries,
+  previewHouseCitationKey,
 } from "@/lib/bibliography-import";
 import type { ZoteroSearchResult } from "@/lib/zotero-api";
 import { useZoteroStore } from "@/stores/zotero-store";
@@ -39,15 +41,24 @@ interface ZoteroCollectionBrowserProps {
 
 const PAGE_SIZE = 50;
 
-function matchesItem(item: ZoteroSearchResult, query: string): boolean {
+/** A Zotero item paired with the citation key it would carry in this project. */
+interface BrowsableItem {
+  item: ZoteroSearchResult;
+  /** The house-style key this entry gets on import. */
+  citekey: string;
+  /** The key it already has in the project, if it is here already. */
+  existingKey: string | null;
+}
+
+function matchesItem(entry: BrowsableItem, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
   const haystack = [
-    item.title,
-    item.creators,
-    item.year,
-    item.publication,
-    item.citekey,
+    entry.item.title,
+    entry.item.creators,
+    entry.item.year,
+    entry.item.publication,
+    entry.citekey,
   ]
     .filter(Boolean)
     .join(" ")
@@ -125,32 +136,45 @@ export function ZoteroCollectionBrowser({
     }
   };
 
-  const existingKeys = useMemo(
-    () => collectExistingCitationKeys(files),
-    [files],
+  const citations = useMemo(() => collectProjectCitations(files), [files]);
+  const browsable = useMemo<BrowsableItem[]>(
+    () =>
+      items.map((item) => {
+        const citekey = previewHouseCitationKey(item.bibtex);
+        return {
+          item,
+          citekey,
+          existingKey: findExistingCitationKey(citations, {
+            key: citekey,
+            title: item.title,
+          }),
+        };
+      }),
+    [citations, items],
   );
   const visibleItems = useMemo(
-    () => items.filter((item) => matchesItem(item, query)),
-    [items, query],
+    () => browsable.filter((entry) => matchesItem(entry, query)),
+    [browsable, query],
   );
   const selectedItems = useMemo(
-    () => items.filter((item) => selectedKeys.includes(item.key)),
-    [items, selectedKeys],
+    () => browsable.filter((entry) => selectedKeys.includes(entry.item.key)),
+    [browsable, selectedKeys],
   );
   const prepared = useMemo(() => {
     const incoming = selectedItems
-      .filter((item) => !existingKeys.has(item.citekey))
-      .map((item) => item.bibtex)
+      .filter((entry) => !entry.existingKey)
+      .map((entry) => entry.item.bibtex)
       .join("\n\n");
-    return prepareBibtexEntries(incoming, existingKeys, { tidy: true });
-  }, [existingKeys, selectedItems]);
+    return prepareBibtexEntries(incoming, citations.keys, {
+      tidy: true,
+      rekey: true,
+    });
+  }, [citations, selectedItems]);
 
-  const selectableVisible = visibleItems.filter(
-    (item) => !existingKeys.has(item.citekey),
-  );
+  const selectableVisible = visibleItems.filter((entry) => !entry.existingKey);
   const allVisibleSelected =
     selectableVisible.length > 0 &&
-    selectableVisible.every((item) => selectedKeys.includes(item.key));
+    selectableVisible.every((entry) => selectedKeys.includes(entry.item.key));
 
   const toggleItem = (key: string) => {
     setSelectedKeys((current) =>
@@ -163,11 +187,13 @@ export function ZoteroCollectionBrowser({
   const toggleAllVisible = () => {
     setSelectedKeys((current) => {
       if (allVisibleSelected) {
-        const visible = new Set(selectableVisible.map((item) => item.key));
+        const visible = new Set(
+          selectableVisible.map((entry) => entry.item.key),
+        );
         return current.filter((key) => !visible.has(key));
       }
       const next = new Set(current);
-      for (const item of selectableVisible) next.add(item.key);
+      for (const entry of selectableVisible) next.add(entry.item.key);
       return Array.from(next);
     });
   };
@@ -284,9 +310,10 @@ export function ZoteroCollectionBrowser({
           </p>
         ) : (
           <>
-            {visibleItems.map((item) => {
+            {visibleItems.map((entry) => {
+              const { item, citekey, existingKey } = entry;
               const selected = selectedKeys.includes(item.key);
-              const inProject = existingKeys.has(item.citekey);
+              const inProject = existingKey !== null;
               return (
                 <button
                   key={item.key}
@@ -324,7 +351,7 @@ export function ZoteroCollectionBrowser({
                       {item.title}
                     </span>
                     <span className="mt-0.5 block truncate text-[10px] text-muted-foreground leading-tight">
-                      {[item.creators, item.year, item.citekey]
+                      {[item.creators, item.year, existingKey ?? citekey]
                         .filter(Boolean)
                         .join(" · ")}
                     </span>
@@ -396,8 +423,8 @@ export function ZoteroCollectionBrowser({
             : `Add ${prepared.length} to bibliography`}
         </Button>
         <p className="text-[9px] text-muted-foreground leading-relaxed">
-          Entries are reformatted to match your bibliography. References already
-          in the project are ticked and cannot be added twice.
+          Entries are re-keyed and reformatted in your house style. References
+          already in the project are ticked and cannot be added twice.
         </p>
       </div>
     </div>

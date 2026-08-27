@@ -15,21 +15,27 @@ const bibFile = {
   content: "@article{existing2020,\n  title = {Already Here}\n}",
 } as ProjectFile;
 
-function item(key: string, title: string, citekey: string): ZoteroSearchResult {
+/** Zotero's own export key is deliberately unlike Opal's house style. */
+function item(key: string, title: string): ZoteroSearchResult {
   return {
     key,
-    citekey,
     title,
     creators: "Doe",
     year: "2024",
     itemType: "journalArticle",
     publication: "Journal of Geography",
-    bibtex: `@article{${citekey},\n  title = {${title}}\n}`,
+    bibtex: [
+      `@article{doeZOTERO${key},`,
+      "  author = {Doe, Jane},",
+      `  title = {${title}},`,
+      "  year = {2024}",
+      "}",
+    ].join("\n"),
   };
 }
 
-const spatial = item("ITEM0001", "Spatial models", "doe2024spatial");
-const urban = item("ITEM0002", "Urban growth", "doe2024urban");
+const spatial = item("ITEM0001", "Spatial models");
+const urban = item("ITEM0002", "Urban growth");
 
 function setUp(
   page: Partial<ZoteroItemPage> & { items: ZoteroSearchResult[] },
@@ -106,8 +112,15 @@ describe("ZoteroCollectionBrowser", () => {
     expect(screen.getByText("Add 2 to bibliography")).toBeTruthy();
   });
 
+  it("names each item by the key it will carry in the project", async () => {
+    setUp({ items: [spatial] });
+    renderBrowser();
+
+    expect(await screen.findByText(/doe2024spatial/)).toBeTruthy();
+  });
+
   it("will not add a reference the project already cites", async () => {
-    setUp({ items: [item("ITEM0003", "Already Here", "existing2020")] });
+    setUp({ items: [item("ITEM0003", "Already Here")] });
     const user = userEvent.setup();
     renderBrowser();
 
@@ -115,6 +128,14 @@ describe("ZoteroCollectionBrowser", () => {
     expect(row.hasAttribute("disabled")).toBe(true);
     await user.click(row);
     expect(screen.getByText("Add selected")).toBeTruthy();
+  });
+
+  it("recognises a work already cited under a different key", async () => {
+    setUp({ items: [item("ITEM0003", "Already Here")] });
+    renderBrowser();
+
+    // The project stored it as existing2020; the house key would be doe2024already.
+    expect(await screen.findByText(/existing2020/)).toBeTruthy();
   });
 
   it("offers to load the rest of a long collection", async () => {

@@ -21,10 +21,12 @@ import {
 } from "@/components/ui/select";
 import {
   appendBibtexSource,
-  collectExistingCitationKeys,
+  collectProjectCitations,
   createBibliographyFromSource,
   defaultBibliographyTarget,
+  findExistingCitationKey,
   prepareBibtexEntries,
+  previewHouseCitationKey,
 } from "@/lib/bibliography-import";
 import type { ZoteroSearchResult } from "@/lib/zotero-api";
 import { useZoteroStore } from "@/stores/zotero-store";
@@ -122,24 +124,39 @@ export function ZoteroSearchForm({
     return () => clearTimeout(timer);
   }, [isAuthenticated, query, runSearch]);
 
-  const existingKeys = useMemo(
-    () => collectExistingCitationKeys(files),
-    [files],
+  const citations = useMemo(() => collectProjectCitations(files), [files]);
+  const found = useMemo(
+    () =>
+      results.map((result) => {
+        const citekey = previewHouseCitationKey(result.bibtex);
+        return {
+          result,
+          citekey,
+          existingKey: findExistingCitationKey(citations, {
+            key: citekey,
+            title: result.title,
+          }),
+        };
+      }),
+    [citations, results],
   );
   const selectedResults = useMemo(
-    () => results.filter((result) => selectedItemKeys.includes(result.key)),
-    [results, selectedItemKeys],
+    () => found.filter((entry) => selectedItemKeys.includes(entry.result.key)),
+    [found, selectedItemKeys],
   );
-  const reusedKeys = selectedResults
-    .filter((result) => existingKeys.has(result.citekey))
-    .map((result) => result.citekey);
+  const reusedKeys = selectedResults.flatMap((entry) =>
+    entry.existingKey ? [entry.existingKey] : [],
+  );
   const prepared = useMemo(() => {
     const incoming = selectedResults
-      .filter((result) => !existingKeys.has(result.citekey))
-      .map((result) => result.bibtex)
+      .filter((entry) => !entry.existingKey)
+      .map((entry) => entry.result.bibtex)
       .join("\n\n");
-    return prepareBibtexEntries(incoming, existingKeys, { tidy: true });
-  }, [existingKeys, selectedResults]);
+    return prepareBibtexEntries(incoming, citations.keys, {
+      tidy: true,
+      rekey: true,
+    });
+  }, [citations, selectedResults]);
 
   const toggleResult = (key: string) => {
     setSelectedItemKeys((current) =>
@@ -281,9 +298,10 @@ export function ZoteroSearchForm({
               : `Nothing in Zotero matches “${query.trim()}”`}
           </div>
         ) : (
-          results.map((result) => {
+          found.map((entry) => {
+            const { result, citekey, existingKey } = entry;
             const selected = selectedItemKeys.includes(result.key);
-            const inProject = existingKeys.has(result.citekey);
+            const inProject = existingKey !== null;
             return (
               <button
                 key={result.key}
@@ -314,7 +332,7 @@ export function ZoteroSearchForm({
                 </span>
                 <span className="flex shrink-0 flex-col items-end gap-0.5">
                   <span className="max-w-32 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                    {result.citekey || result.key}
+                    {existingKey ?? citekey ?? result.key}
                   </span>
                   {inProject && (
                     <span className="text-[9px] text-muted-foreground">

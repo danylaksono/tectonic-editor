@@ -17,7 +17,15 @@ interface CachedDoc {
 const MAX_OPEN_DOCS = 3;
 const cache = new Map<string, CachedDoc>();
 
-/** Create a fast fingerprint from PDF bytes (length + sampled bytes). */
+/** Create a fast fingerprint from PDF bytes (length + sampled bytes).
+ *
+ * Exported as `pdfFingerprint` so other features can ask "is this the same
+ * build?" without opening the document — review re-anchoring uses it to skip
+ * annotations already checked against the PDF on screen. */
+export function pdfFingerprint(data: Uint8Array): string {
+  return computeFingerprint(data);
+}
+
 function computeFingerprint(data: Uint8Array): string {
   const len = data.length;
   if (len < 16) return `${len}:${Array.from(data).join(",")}`;

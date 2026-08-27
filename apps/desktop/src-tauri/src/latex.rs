@@ -974,6 +974,7 @@ fn compile_with_texlive(
 
 // --- SyncTeX Native Parser ---
 
+#[derive(Clone, Copy)]
 struct SynctexNode {
     tag: u32,
     line: u32,
@@ -1131,11 +1132,41 @@ fn synctex_paths_match(input: &str, target: &str) -> bool {
 ///
 /// SyncTeX does not guarantee a node for every source line, so this deliberately
 /// falls back to the nearest line belonging to the requested input file.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SynctexViewTarget {
+    pub file: String,
+    pub line: u32,
+}
+
 fn parse_synctex_view(
     data: &str,
     target_file: &str,
     target_line: u32,
 ) -> Option<SynctexViewResult> {
+    let targets = vec![SynctexViewTarget {
+        file: target_file.to_string(),
+        line: target_line,
+    }];
+    parse_synctex_view_batch(data, &targets).pop().flatten()
+}
+
+/// Resolve several source locations against one synctex file in a single pass.
+///
+/// The expensive part - scanning the file, which runs to tens of megabytes for a
+/// thesis - happens once; targets are grouped by input tag so each node record is
+/// only compared against the locations living in that source file. Resolving them
+/// one at a time is what would make re-anchoring a document's worth of review
+/// annotations take minutes instead of a moment.
+///
+/// Results are index-aligned with `targets`.
+fn parse_synctex_view_batch(
+    data: &str,
+    targets: &[SynctexViewTarget],
+) -> Vec<Option<SynctexViewResult>> {
+    if targets.is_empty() {
+        return Vec::new();
+    }
+
     let mut inputs: HashMap<u32, String> = HashMap::new();
     let mut magnification: f64 = 1000.0;
     let mut unit: f64 = 1.0;
@@ -1143,8 +1174,25 @@ fn parse_synctex_view(
     let mut y_offset: f64 = 0.0;
     let mut in_content = false;
     let mut current_page = 0;
-    let mut target_tags = Vec::new();
-    let mut best: Option<(u32, SynctexNode)> = None;
+    // Input tag -> indices into `targets` whose file that tag names.
+    let mut tag_targets: HashMap<u32, Vec<usize>> = HashMap::new();
+    let mut best: Vec<Option<(u32, SynctexNode)>> = vec![None; targets.len()];
+
+    fn register(
+        tag_targets: &mut HashMap<u32, Vec<usize>>,
+        targets: &[SynctexViewTarget],
+        tag: u32,
+        input: &str,
+    ) {
+        for (index, target) in targets.iter().enumerate() {
+            if synctex_paths_match(input, &target.file) {
+                let entry = tag_targets.entry(tag).or_default();
+                if !entry.contains(&index) {
+                    entry.push(index);
+                }
+            }
+        }
+    }
 
     for raw_line in data.lines() {
         let line = raw_line.trim();
@@ -1168,12 +1216,9 @@ fn parse_synctex_view(
             } else if let Some(rest) = line.strip_prefix("Y Offset:") {
                 y_offset = rest.trim().parse().unwrap_or(0.0);
             } else if line == "Content:" {
-                target_tags = inputs
-                    .iter()
-                    .filter_map(|(tag, input)| {
-                        synctex_paths_match(input, target_file).then_some(*tag)
-                    })
-                    .collect();
+                for (tag, input) in &inputs {
+                    register(&mut tag_targets, targets, *tag, input);
+                }
                 in_content = true;
             }
             continue;
@@ -1183,26 +1228,29 @@ fn parse_synctex_view(
             break;
         }
 
-        // Input records for \include'd files appear mid-content (the file is
-        // first opened after a page ships out) — match them as they stream by.
+        // Input records for included files appear mid-content (the file is
+        // first opened after a page ships out) - match them as they stream by.
         if let Some(rest) = line.strip_prefix("Input:") {
             if let Some(colon_pos) = rest.find(':') {
                 if let Ok(tag) = rest[..colon_pos].parse::<u32>() {
-                    if synctex_paths_match(&rest[colon_pos + 1..], target_file) {
-                        target_tags.push(tag);
-                    }
+                    register(&mut tag_targets, targets, tag, &rest[colon_pos + 1..]);
                 }
             }
             continue;
         }
 
-        let first_byte = *line.as_bytes().first()?;
+        let Some(first_byte) = line.as_bytes().first().copied() else {
+            continue;
+        };
         match first_byte {
             b'{' => {
                 current_page = line.get(1..).and_then(|s| s.parse().ok()).unwrap_or(0);
             }
             b'}' => current_page = 0,
             b'[' | b'(' | b'h' | b'v' | b'k' | b'x' | b'g' | b'$' if current_page > 0 => {
+                if tag_targets.is_empty() {
+                    continue;
+                }
                 let factor = unit * magnification / (1000.0 * 65536.0) * 72.0 / 72.27;
                 let Some(node) = line
                     .get(1..)
@@ -1210,39 +1258,46 @@ fn parse_synctex_view(
                 else {
                     continue;
                 };
-                if !target_tags.contains(&node.tag) {
+                let Some(indices) = tag_targets.get(&node.tag) else {
                     continue;
-                }
-
-                let line_distance = node.line.abs_diff(target_line);
-                let should_replace = best
-                    .as_ref()
-                    .map(|(_, current)| {
-                        line_distance < current.line.abs_diff(target_line)
-                            || (line_distance == current.line.abs_diff(target_line)
-                                && node.width.abs() + node.height.abs() + node.depth.abs()
-                                    > current.width.abs()
-                                        + current.height.abs()
-                                        + current.depth.abs())
-                    })
-                    .unwrap_or(true);
-                if should_replace {
-                    best = Some((current_page, node));
+                };
+                for &index in indices {
+                    let target_line = targets[index].line;
+                    let line_distance = node.line.abs_diff(target_line);
+                    let should_replace = best[index]
+                        .as_ref()
+                        .map(|(_, current)| {
+                            line_distance < current.line.abs_diff(target_line)
+                                || (line_distance == current.line.abs_diff(target_line)
+                                    && node.width.abs() + node.height.abs() + node.depth.abs()
+                                        > current.width.abs()
+                                            + current.height.abs()
+                                            + current.depth.abs())
+                        })
+                        .unwrap_or(true);
+                    if should_replace {
+                        best[index] = Some((current_page, node));
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    let (page, node) = best?;
-    let box_height = node.height.abs() + node.depth.abs();
-    Some(SynctexViewResult {
-        page,
-        x: node.h.max(0.0),
-        y: (node.v - node.height.abs()).max(0.0),
-        width: node.width.abs().max(12.0),
-        height: box_height.max(12.0),
-    })
+    best.into_iter()
+        .map(|entry| {
+            entry.map(|(page, node)| {
+                let box_height = node.height.abs() + node.depth.abs();
+                SynctexViewResult {
+                    page,
+                    x: node.h.max(0.0),
+                    y: (node.v - node.height.abs()).max(0.0),
+                    width: node.width.abs().max(12.0),
+                    height: box_height.max(12.0),
+                }
+            })
+        })
+        .collect()
 }
 
 /// Parse a synctex node record (after stripping the type character).
@@ -1712,6 +1767,37 @@ pub async fn synctex_view(
     .map_err(|e| format!("Synctex task panicked: {}", e))?
 }
 
+#[tauri::command]
+pub async fn synctex_view_batch(
+    state: tauri::State<'_, LatexCompilerState>,
+    project_dir: String,
+    targets: Vec<SynctexViewTarget>,
+) -> Result<Vec<Option<SynctexViewResult>>, String> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let builds = state.last_builds.lock().await;
+    let build = builds
+        .get(&project_dir)
+        .ok_or("No build found for this project")?;
+
+    let synctex_gz = build
+        .work_dir
+        .join(format!("{}.synctex.gz", build.main_file_name));
+    let synctex_plain = build
+        .work_dir
+        .join(format!("{}.synctex", build.main_file_name));
+    drop(builds);
+
+    tokio::task::spawn_blocking(move || -> Result<Vec<Option<SynctexViewResult>>, String> {
+        let synctex_data = read_synctex_data(&synctex_gz, &synctex_plain)?;
+        Ok(parse_synctex_view_batch(&synctex_data, &targets))
+    })
+    .await
+    .map_err(|e| format!("Synctex task panicked: {}", e))?
+}
+
 /// Clear in-memory build state on app exit.
 /// Persistent build directories are intentionally kept for fast restart.
 pub async fn cleanup_all_builds(state: &LatexCompilerState) {
@@ -2074,6 +2160,103 @@ Postamble:
         assert!(result.is_some());
         let (_, line, _) = result.unwrap();
         assert_eq!(line, 25);
+    }
+
+    // --- parse_synctex_view_batch ---
+
+    /// Two source files, each with several lines, in one synctex file.
+    const BATCH_SAMPLE: &str = "\
+Input:1:./main.tex
+Input:2:./chapters/results.tex
+Input:3:./chapters/method.tex
+Magnification:1000
+Unit:65536
+X Offset:0
+Y Offset:0
+Content:
+{1
+h2,10,0:72,100:120,12,3
+}1
+{3
+h2,40,0:72,144:120,12,3
+h3,55,0:90,400:200,12,3
+}3
+Postamble:
+";
+
+    #[test]
+    fn test_parse_synctex_view_batch_resolves_every_target_in_one_pass() {
+        let targets = vec![
+            SynctexViewTarget {
+                file: "chapters/results.tex".to_string(),
+                line: 40,
+            },
+            SynctexViewTarget {
+                file: "chapters/method.tex".to_string(),
+                line: 55,
+            },
+            SynctexViewTarget {
+                file: "chapters/results.tex".to_string(),
+                line: 10,
+            },
+        ];
+        let results = parse_synctex_view_batch(BATCH_SAMPLE, &targets);
+
+        assert_eq!(results.len(), 3);
+        // Results are index-aligned with the targets, not with document order.
+        assert_eq!(results[0].as_ref().unwrap().page, 3);
+        assert_eq!(results[1].as_ref().unwrap().page, 3);
+        assert!(results[1].as_ref().unwrap().x > 89.0);
+        assert_eq!(results[2].as_ref().unwrap().page, 1);
+    }
+
+    #[test]
+    fn test_parse_synctex_view_batch_reports_unresolved_targets_as_none() {
+        let targets = vec![
+            SynctexViewTarget {
+                file: "missing.tex".to_string(),
+                line: 5,
+            },
+            SynctexViewTarget {
+                file: "chapters/method.tex".to_string(),
+                line: 55,
+            },
+        ];
+        let results = parse_synctex_view_batch(BATCH_SAMPLE, &targets);
+
+        assert!(results[0].is_none());
+        assert!(results[1].is_some());
+    }
+
+    #[test]
+    fn test_parse_synctex_view_batch_matches_one_at_a_time() {
+        // The batch parser is only worth having if it agrees with the single
+        // lookup it replaced.
+        let targets = vec![
+            SynctexViewTarget {
+                file: "chapters/results.tex".to_string(),
+                line: 40,
+            },
+            SynctexViewTarget {
+                file: "chapters/method.tex".to_string(),
+                line: 55,
+            },
+        ];
+        let batched = parse_synctex_view_batch(BATCH_SAMPLE, &targets);
+        for (index, target) in targets.iter().enumerate() {
+            let single = parse_synctex_view(BATCH_SAMPLE, &target.file, target.line);
+            assert_eq!(single.is_some(), batched[index].is_some());
+            if let (Some(single), Some(batched)) = (single, batched[index].as_ref()) {
+                assert_eq!(single.page, batched.page);
+                assert_eq!(single.x, batched.x);
+                assert_eq!(single.y, batched.y);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_synctex_view_batch_handles_no_targets() {
+        assert!(parse_synctex_view_batch(BATCH_SAMPLE, &[]).is_empty());
     }
 
     // --- parse_synctex_view ---

@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { createLogger } from "@/lib/debug/logger";
 import { useSettingsStore } from "@/stores/settings-store";
+import { dedupeReviewTags } from "@/lib/review-tags";
 
 const log = createLogger("review");
 const REVIEW_FILE_VERSION = 2;
@@ -41,6 +42,25 @@ export interface ReviewReply {
 
 export type ReviewAnnotationKind = "comment" | "highlight";
 
+/** How one annotation's anchor fared against a freshly compiled PDF.
+ *  "ok" — still where it was; "moved" — relocated onto the new layout;
+ *  "drifted" — it had something to search by and that search failed, so the
+ *  stored coordinates may now point at the wrong paragraph; "unverified" —
+ *  nothing to locate it by at all, which is not evidence either way. */
+export type ReviewAnchorStatus = "ok" | "moved" | "drifted" | "unverified";
+
+export interface ReviewAnchorUpdate {
+  id: string;
+  anchor: ReviewAnchor;
+  status: ReviewAnchorStatus;
+}
+
+export interface ReviewAnchorCheck {
+  /** Fingerprint of the PDF this annotation was last checked against. */
+  fingerprint: string;
+  status: ReviewAnchorStatus;
+}
+
 export interface ReviewComment {
   id: string;
   kind: ReviewAnnotationKind;
@@ -52,6 +72,9 @@ export interface ReviewComment {
   /** Highlight colour token (see REVIEW_HIGHLIGHT_COLORS); absent for
    *  comments and for highlights saved before colours existed. */
   color?: string;
+  /** Free-form labels, normalised (see lib/review-tags). Absent, not empty,
+   *  when untagged — keeps untagged annotations out of everyone's diffs. */
+  tags?: string[];
   replies: ReviewReply[];
   createdAt: string;
   updatedAt: string;
@@ -78,6 +101,7 @@ interface AddReviewCommentInput {
   anchor: ReviewAnchor;
   kind?: ReviewAnnotationKind;
   color?: string;
+  tags?: string[];
 }
 
 interface ReviewState {
@@ -86,11 +110,22 @@ interface ReviewState {
   loading: boolean;
   /** Resolved author name used for new annotations and replies. */
   reviewer: string;
+  /** Which PDF version each anchor was last verified against, and how that
+   *  went. Deliberately in memory only: persisting it would rewrite every
+   *  review file on every recompile, and it costs one pass per PDF to redo. */
+  anchorChecks: Map<string, ReviewAnchorCheck>;
   loadProject: (projectRoot: string) => Promise<void>;
   clearProject: () => void;
   addComment: (input: AddReviewCommentInput) => ReviewComment;
   addReply: (id: string, body: string) => void;
   setCommentStatus: (id: string, status: ReviewComment["status"]) => void;
+  setCommentTags: (id: string, tags: string[]) => void;
+  /** Record the outcome of a re-anchor pass, persisting only the annotations
+   *  that actually moved. */
+  applyAnchorUpdates: (
+    updates: ReviewAnchorUpdate[],
+    fingerprint: string,
+  ) => void;
   deleteComment: (id: string) => void;
 }
 
@@ -162,6 +197,9 @@ function isReviewComment(value: unknown): value is ReviewComment {
     typeof comment.body === "string" &&
     (comment.status === "open" || comment.status === "resolved") &&
     (comment.color === undefined || typeof comment.color === "string") &&
+    (comment.tags === undefined ||
+      (Array.isArray(comment.tags) &&
+        comment.tags.every((tag) => typeof tag === "string"))) &&
     typeof comment.createdAt === "string" &&
     typeof comment.updatedAt === "string" &&
     Array.isArray(comment.replies) &&
@@ -283,9 +321,10 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   comments: [],
   loading: false,
   reviewer: FALLBACK_REVIEWER,
+  anchorChecks: new Map(),
 
   loadProject: async (projectRoot) => {
-    set({ projectRoot, comments: [], loading: true });
+    set({ projectRoot, comments: [], loading: true, anchorChecks: new Map() });
     try {
       const reviewer = await resolveReviewerName();
       let comments = await loadReviewDirectory(projectRoot);
@@ -310,7 +349,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       }
 
       if (get().projectRoot === projectRoot) {
-        set({ comments, loading: false, reviewer });
+        set({ comments, loading: false, reviewer, anchorChecks: new Map() });
       }
     } catch (error) {
       log.error("Failed to load review annotations", {
@@ -322,7 +361,13 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     }
   },
 
-  clearProject: () => set({ projectRoot: null, comments: [], loading: false }),
+  clearProject: () =>
+    set({
+      projectRoot: null,
+      comments: [],
+      loading: false,
+      anchorChecks: new Map(),
+    }),
 
   addComment: (input) => {
     const now = new Date().toISOString();
@@ -335,6 +380,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       status: "open",
       anchor: input.anchor,
       color: input.color,
+      tags: input.tags?.length ? dedupeReviewTags(input.tags) : undefined,
       replies: [],
       createdAt: now,
       updatedAt: now,
@@ -386,11 +432,64 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     if (projectRoot) persistAuthors(projectRoot, comments, [touchedAuthor]);
   },
 
+  setCommentTags: (id, tags) => {
+    const normalized = dedupeReviewTags(tags);
+    let touchedAuthor: string | null = null;
+    const comments = get().comments.map((comment) => {
+      if (comment.id !== id) return comment;
+      const current = comment.tags ?? [];
+      if (
+        current.length === normalized.length &&
+        current.every((tag, index) => tag === normalized[index])
+      ) {
+        return comment;
+      }
+      touchedAuthor = comment.author;
+      return {
+        ...comment,
+        tags: normalized.length ? normalized : undefined,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    if (!touchedAuthor) return;
+    set({ comments });
+    const projectRoot = get().projectRoot;
+    if (projectRoot) persistAuthors(projectRoot, comments, [touchedAuthor]);
+  },
+
+  applyAnchorUpdates: (updates, fingerprint) => {
+    if (updates.length === 0) return;
+    const anchorChecks = new Map(get().anchorChecks);
+    const moved = new Map<string, ReviewAnchor>();
+    for (const update of updates) {
+      anchorChecks.set(update.id, { fingerprint, status: update.status });
+      if (update.status === "moved") moved.set(update.id, update.anchor);
+    }
+    if (moved.size === 0) {
+      set({ anchorChecks });
+      return;
+    }
+    const touchedAuthors = new Set<string>();
+    const comments = get().comments.map((comment) => {
+      const anchor = moved.get(comment.id);
+      if (!anchor) return comment;
+      touchedAuthors.add(comment.author);
+      // updatedAt tracks human edits — following the text the annotation was
+      // always attached to is not one, so it is left alone.
+      return { ...comment, anchor };
+    });
+    set({ comments, anchorChecks });
+    const projectRoot = get().projectRoot;
+    if (projectRoot) persistAuthors(projectRoot, comments, touchedAuthors);
+  },
+
   deleteComment: (id) => {
     const target = get().comments.find((comment) => comment.id === id);
     if (!target) return;
     const comments = get().comments.filter((comment) => comment.id !== id);
-    set({ comments });
+    const anchorChecks = new Map(get().anchorChecks);
+    anchorChecks.delete(id);
+    set({ comments, anchorChecks });
     const projectRoot = get().projectRoot;
     if (projectRoot) persistAuthors(projectRoot, comments, [target.author]);
   },

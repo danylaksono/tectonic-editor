@@ -153,6 +153,11 @@ interface PdfViewerProps {
   selectedReviewAnnotationId?: string | null;
   onSelectReviewAnnotation?: (id: string) => void;
   onAddReviewComment?: (target: PdfReviewTarget) => void;
+  /** Fired once the MuPDF document behind the current bytes is open, so the
+   *  preview can run work that needs the document itself (extracting the text
+   *  under a highlight, re-anchoring review annotations) without opening a
+   *  second copy of the PDF in the WASM heap. */
+  onDocumentReady?: (docId: number, pageCount: number) => void;
   /** Review "comment pin" tool: clicks place a point comment instead of
    *  interacting with the text layer. */
   commentPlacementMode?: boolean;
@@ -196,6 +201,7 @@ export function PdfViewer({
   selectedReviewAnnotationId,
   onSelectReviewAnnotation,
   onAddReviewComment,
+  onDocumentReady,
   commentPlacementMode = false,
   onPlacePointComment,
   highlightPlacementMode = false,
@@ -484,6 +490,7 @@ export function PdfViewer({
       }
       isFirstLoad.current = false;
       onLoadSuccess?.(syncResult.pageSizes.length);
+      onDocumentReady?.(syncResult.docId, syncResult.pageSizes.length);
 
       if (rootFileId) {
         const targetPage = scrollPositionCache.get(rootFileId) ?? 0;
@@ -517,6 +524,7 @@ export function PdfViewer({
         }
         isFirstLoad.current = false;
         onLoadSuccess?.(sizes.length);
+        onDocumentReady?.(docId, sizes.length);
 
         const targetPage = savedPageRef.current;
         if (targetPage > 0) {

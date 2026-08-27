@@ -66,6 +66,7 @@ import { HistoryPanel } from "@/components/workspace/history-panel";
 import {
   compileLatex,
   synctexEdit,
+  synctexViewBatch,
   resolveCompileTarget,
   formatCompileError,
   effectiveCompileProfile,
@@ -101,6 +102,11 @@ import {
   type ReviewComment,
   type ReviewSourceLocation,
 } from "@/stores/review-store";
+import { reanchorAnnotations } from "@/lib/review-reanchor";
+import { collectReviewTags } from "@/lib/review-tags";
+import { getMupdfClient } from "@/lib/mupdf/mupdf-client";
+import { getCachedDocument, pdfFingerprint } from "@/lib/mupdf/pdf-doc-cache";
+import { textInRect } from "@/lib/mupdf/structured-text";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import {
   ReviewCommentDialog,
@@ -384,6 +390,8 @@ export function PdfPreview() {
   );
   const deleteReviewComment = useReviewStore((state) => state.deleteComment);
   const addReviewReply = useReviewStore((state) => state.addReply);
+  const setReviewCommentTags = useReviewStore((state) => state.setCommentTags);
+  const reviewAnchorChecks = useReviewStore((state) => state.anchorChecks);
   const [pageInputValue, setPageInputValue] = useState<string>("1");
   const [isEditingPage, setIsEditingPage] = useState(false);
   const scrollToPageRef = useRef<
@@ -400,6 +408,8 @@ export function PdfPreview() {
   const [synctexHighlight, setSynctexHighlight] =
     useState<PdfHighlightLocation | null>(null);
   const [selectedReviewId, setSelectedReviewId] = useState<string | null>(null);
+  /** Bumped to abandon an in-flight re-anchor pass when a newer PDF arrives. */
+  const reanchorGenRef = useRef(0);
   const [reviewDraft, setReviewDraft] = useState<ReviewCommentDraft | null>(
     null,
   );
@@ -515,6 +525,10 @@ export function PdfPreview() {
     () =>
       reviewComments.filter((comment) => comment.documentRoot === rootFileName),
     [reviewComments, rootFileName],
+  );
+  const knownReviewTags = useMemo(
+    () => collectReviewTags(documentReviewComments).map((entry) => entry.tag),
+    [documentReviewComments],
   );
   const reviewAnnotations: PdfReviewAnnotation[] = useMemo(
     () =>
@@ -670,14 +684,140 @@ export function PdfPreview() {
     column: number;
   } | null>(null);
 
+  /** The MuPDF document behind the PDF currently on screen, if the viewer has
+   *  already opened it. Read from the cache rather than opened here — a second
+   *  open would pin another copy of the PDF in the WASM heap, which never
+   *  shrinks — and read fresh each time, so it can never name a stale build. */
+  const openDocument = useCallback((): {
+    docId: number;
+    pageCount: number;
+  } | null => {
+    const bytes = getCurrentPdfBytes();
+    if (!bytes) return null;
+    const cached = getCachedDocument(bytes);
+    return cached
+      ? { docId: cached.docId, pageCount: cached.pageSizes.length }
+      : null;
+  }, []);
+
+  /** The text an annotation sits on, read out of the PDF itself.
+   *
+   *  Drag-a-box highlights and pin comments carry no selection, so without
+   *  this they have nothing to quote in the panel — and, more importantly,
+   *  nothing to search for when the document is recompiled and the stored box
+   *  no longer lands on the same words. */
+  const captureAnchorText = useCallback(
+    async (target: PdfReviewTarget): Promise<string> => {
+      if (target.selectedText?.trim()) return target.selectedText.trim();
+      const doc = openDocument();
+      if (!doc || !target.page || target.page > doc.pageCount) return "";
+      try {
+        const pageText = await getMupdfClient().getPageText(
+          doc.docId,
+          target.page - 1,
+        );
+        // A pin has no area of its own — read the line it was dropped on.
+        const rect =
+          target.kind === "point"
+            ? { x: 0, y: target.y - 6, width: 100000, height: 12 }
+            : {
+                x: target.x,
+                y: target.y,
+                width: target.width,
+                height: target.height,
+              };
+        return textInRect(pageText, rect);
+      } catch (error) {
+        log.debug("Could not read text under annotation", {
+          error: String(error),
+        });
+        return "";
+      }
+    },
+    [openDocument],
+  );
+
+  /** Walk every annotation on this document back onto the PDF now on screen.
+   *
+   *  Anchors are page + x/y measured against one exact build, so any recompile
+   *  that reflows text leaves them pointing at the wrong paragraph. The pass is
+   *  skipped for annotations already checked against these bytes, which makes
+   *  it a no-op on file switches and on every compile that changes nothing
+   *  above them. */
+  const runReanchorPass = useCallback(async () => {
+    const doc = openDocument();
+    const bytes = getCurrentPdfBytes();
+    if (!doc || !bytes || !projectRoot) return;
+    const fingerprint = pdfFingerprint(bytes);
+
+    const { comments, anchorChecks } = useReviewStore.getState();
+    const pending = comments.filter(
+      (comment) =>
+        comment.documentRoot === rootFileName &&
+        anchorChecks.get(comment.id)?.fingerprint !== fingerprint,
+    );
+    if (pending.length === 0) return;
+
+    const generation = ++reanchorGenRef.current;
+    const client = getMupdfClient();
+    const updates = await reanchorAnnotations(pending, {
+      pageCount: doc.pageCount,
+      searchPage: (pageIndex, needle, maxHits) =>
+        client.searchPage(doc.docId, pageIndex, needle, maxHits),
+      forwardSearch: async (sources) => {
+        const results = await synctexViewBatch(
+          projectRoot,
+          sources.map((source) => ({ file: source.file, line: source.line })),
+        );
+        return results.map((result) =>
+          result
+            ? {
+                page: result.page,
+                x: result.x,
+                y: result.y,
+                width: result.width,
+                height: result.height,
+              }
+            : null,
+        );
+      },
+      isCancelled: () => reanchorGenRef.current !== generation,
+    });
+    if (reanchorGenRef.current !== generation) return;
+
+    const moved = updates.filter((update) => update.status === "moved").length;
+    const drifted = updates.filter(
+      (update) => update.status === "drifted",
+    ).length;
+    if (moved > 0 || drifted > 0) {
+      log.info("Re-anchored review annotations", {
+        checked: updates.length,
+        moved,
+        drifted,
+      });
+    }
+    useReviewStore.getState().applyAnchorUpdates(updates, fingerprint);
+  }, [projectRoot, rootFileName, openDocument]);
+
+  // Runs when the viewer finishes opening a build, when the review files
+  // finish loading (usually the later of the two), and when an annotation is
+  // added — a new one needs stamping against the current build as well.
+  useEffect(() => {
+    if (reviewLoading) return;
+    void runReanchorPass();
+  }, [reviewLoading, reviewComments, runReanchorPass]);
+
   // Instant highlight: no dialog, saved immediately with a synctex source so
   // "go to source" works on it like any comment.
   const createHighlightAnnotation = useCallback(
     async (target: PdfReviewTarget) => {
       if (!target.page) return;
-      const source = projectRoot
-        ? await synctexEdit(projectRoot, target.page, target.x, target.y)
-        : null;
+      const [source, selectedText] = await Promise.all([
+        projectRoot
+          ? synctexEdit(projectRoot, target.page, target.x, target.y)
+          : Promise.resolve(null),
+        captureAnchorText(target),
+      ]);
       const comment = addReviewComment({
         documentRoot: rootFileName,
         kind: "highlight",
@@ -690,13 +830,13 @@ export function PdfPreview() {
           y: target.y,
           width: Math.max(12, target.width),
           height: Math.max(12, target.height),
-          selectedText: target.selectedText || undefined,
+          selectedText: selectedText || undefined,
           source: source ?? undefined,
         },
       });
       setSelectedReviewId(comment.id);
     },
-    [projectRoot, rootFileName, addReviewComment],
+    [projectRoot, rootFileName, addReviewComment, captureAnchorText],
   );
 
   const handleTextSelect = useCallback((selection: PdfTextSelection | null) => {
@@ -822,9 +962,12 @@ export function PdfPreview() {
   const startReviewComment = useCallback(
     async (target: PdfReviewTarget) => {
       if (!target.page) return;
-      const source = projectRoot
-        ? await synctexEdit(projectRoot, target.page, target.x, target.y)
-        : null;
+      const [source, selectedText] = await Promise.all([
+        projectRoot
+          ? synctexEdit(projectRoot, target.page, target.x, target.y)
+          : Promise.resolve(null),
+        captureAnchorText(target),
+      ]);
       setReviewDraft({
         documentRoot: rootFileName,
         anchor: {
@@ -834,12 +977,12 @@ export function PdfPreview() {
           y: target.y,
           width: Math.max(12, target.width),
           height: Math.max(12, target.height),
-          selectedText: target.selectedText || undefined,
+          selectedText: selectedText || undefined,
           source: source ?? undefined,
         },
       });
     },
-    [projectRoot, rootFileName],
+    [projectRoot, rootFileName, captureAnchorText],
   );
 
   const pdfToolbarActions: ToolbarAction[] = useMemo(
@@ -935,12 +1078,13 @@ export function PdfPreview() {
   );
 
   const handleSaveReviewComment = useCallback(
-    (body: string) => {
+    (body: string, tags: string[]) => {
       if (!reviewDraft) return;
       const comment = addReviewComment({
         documentRoot: reviewDraft.documentRoot,
         anchor: reviewDraft.anchor,
         body,
+        tags,
       });
       setSelectedReviewId(comment.id);
       setReviewDraft(null);
@@ -1513,6 +1657,7 @@ export function PdfPreview() {
                     isActive ? handleSelectReviewAnnotation : undefined
                   }
                   onAddReviewComment={isActive ? startReviewComment : undefined}
+                  onDocumentReady={isActive ? runReanchorPass : undefined}
                   commentPlacementMode={
                     isActive && reviewMode && reviewTool === "comment"
                   }
@@ -2083,10 +2228,14 @@ export function PdfPreview() {
             comments={documentReviewComments}
             loading={reviewLoading}
             selectedId={selectedReviewId}
+            anchorChecks={reviewAnchorChecks}
             onSelect={handleSelectReviewComment}
             onGoToSource={handleReviewGoToSource}
             onSetStatus={(comment, status) =>
               setReviewCommentStatus(comment.id, status)
+            }
+            onSetTags={(comment, tags) =>
+              setReviewCommentTags(comment.id, tags)
             }
             onReply={(comment, body) => addReviewReply(comment.id, body)}
             onDelete={(comment) => {
@@ -2104,6 +2253,7 @@ export function PdfPreview() {
       )}
       <ReviewCommentDialog
         draft={reviewDraft}
+        knownTags={knownReviewTags}
         onOpenChange={(open) => {
           if (!open) setReviewDraft(null);
         }}

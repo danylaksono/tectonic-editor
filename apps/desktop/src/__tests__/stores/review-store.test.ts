@@ -62,6 +62,7 @@ describe("useReviewStore", () => {
       comments: [],
       loading: false,
       reviewer: "Reviewer",
+      anchorChecks: new Map(),
     });
   });
 
@@ -220,5 +221,132 @@ describe("useReviewStore", () => {
         expect.stringContaining("Agreed, will fix."),
       );
     });
+  });
+  it("normalises tags and drops them from the file when the last one goes", async () => {
+    mockReviewDirectory({
+      "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
+    });
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+
+    useReviewStore
+      .getState()
+      .setCommentTags("review-1", ["Likely Question", "#typo", "typo"]);
+    expect(useReviewStore.getState().comments[0].tags).toEqual([
+      "likely-question",
+      "typo",
+    ]);
+
+    useReviewStore.getState().setCommentTags("review-1", []);
+    // Absent rather than an empty array, so untagged annotations stay out of
+    // everyone's diffs.
+    expect(useReviewStore.getState().comments[0].tags).toBeUndefined();
+  });
+
+  it("does not rewrite a file when the tags did not actually change", async () => {
+    mockReviewDirectory({
+      "dany.json": {
+        version: 2,
+        author: "Dany",
+        annotations: [{ ...savedComment, tags: ["typo"] }],
+      },
+    });
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+    vi.mocked(writeTextFile).mockClear();
+
+    useReviewStore.getState().setCommentTags("review-1", ["TYPO"]);
+
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps tags round-tripping through the review file", async () => {
+    mockReviewDirectory({
+      "dany.json": {
+        version: 2,
+        author: "Dany",
+        annotations: [{ ...savedComment, tags: ["weakness"] }],
+      },
+    });
+    await useReviewStore.getState().loadProject("/project");
+    expect(useReviewStore.getState().comments[0].tags).toEqual(["weakness"]);
+  });
+
+  it("saves re-anchored positions but leaves unchanged annotations alone", async () => {
+    mockReviewDirectory({
+      "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
+    });
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+    vi.mocked(writeTextFile).mockClear();
+
+    const moved = { ...savedComment.anchor, page: 5, y: 640 };
+    useReviewStore
+      .getState()
+      .applyAnchorUpdates(
+        [{ id: "review-1", anchor: moved, status: "moved" }],
+        "fingerprint-b",
+      );
+
+    const [comment] = useReviewStore.getState().comments;
+    expect(comment.anchor.page).toBe(5);
+    // Following the text an annotation was always attached to is not a human
+    // edit, so the timestamp stays put.
+    expect(comment.updatedAt).toBe(savedComment.updatedAt);
+    expect(useReviewStore.getState().anchorChecks.get("review-1")).toEqual({
+      fingerprint: "fingerprint-b",
+      status: "moved",
+    });
+
+    await vi.waitFor(() => {
+      expect(writeTextFile).toHaveBeenCalledWith(
+        "/project/review/dany.json",
+        expect.stringContaining('"page": 5'),
+      );
+    });
+  });
+
+  it("records a check without writing when nothing moved", async () => {
+    mockReviewDirectory({
+      "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
+    });
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+    vi.mocked(writeTextFile).mockClear();
+
+    useReviewStore
+      .getState()
+      .applyAnchorUpdates(
+        [{ id: "review-1", anchor: savedComment.anchor, status: "drifted" }],
+        "fingerprint-b",
+      );
+
+    expect(useReviewStore.getState().anchorChecks.get("review-1")?.status).toBe(
+      "drifted",
+    );
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("forgets the anchor check when the annotation is deleted", async () => {
+    mockReviewDirectory({
+      "dany.json": { version: 2, author: "Dany", annotations: [savedComment] },
+    });
+    vi.mocked(mkdir).mockResolvedValue(undefined);
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+    await useReviewStore.getState().loadProject("/project");
+    useReviewStore
+      .getState()
+      .applyAnchorUpdates(
+        [{ id: "review-1", anchor: savedComment.anchor, status: "ok" }],
+        "fingerprint-a",
+      );
+
+    useReviewStore.getState().deleteComment("review-1");
+
+    expect(useReviewStore.getState().anchorChecks.has("review-1")).toBe(false);
   });
 });

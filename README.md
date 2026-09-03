@@ -110,7 +110,7 @@ New AI providers implement the `AiProvider` trait. See [CONTRIBUTING.md](./CONTR
 
 ## Author
 
-**Dany Laksono** — [@danylaksono](https://github.com/danylaksono)
+**Dany Laksono** — [@danylaksono](https://github.com/danylaksono), based upon the work of Claude-prism's contributors.
 
 ## Acknowledgments
 

@@ -10,6 +10,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { createLogger } from "@/lib/debug/logger";
 import { useSettingsStore } from "@/stores/settings-store";
+import { dedupeReviewTags } from "@/lib/review-tags";
+import type { ReviewDrawingTool, ReviewPoint } from "@/lib/review-drawing";
 
 const log = createLogger("review");
 const REVIEW_FILE_VERSION = 2;
@@ -39,7 +41,63 @@ export interface ReviewReply {
   createdAt: string;
 }
 
-export type ReviewAnnotationKind = "comment" | "highlight";
+export type ReviewAnnotationKind = "comment" | "highlight" | "drawing";
+
+/** A mark drawn over the page: a scribble, or a shape swept out in one drag.
+ *  Points are page-relative PDF coordinates, the same space as `anchor`. */
+export interface ReviewDrawing {
+  tool: ReviewDrawingTool;
+  /** Freehand carries the whole stroke; the shapes carry the drag's two ends. */
+  points: ReviewPoint[];
+  /** PDF points. Absent means the default width. */
+  strokeWidth?: number;
+}
+
+/** How one annotation's anchor fared against a freshly compiled PDF.
+ *
+ *  "ok" — its text is still under it; "shifted" — its text turned up elsewhere,
+ *  so the annotation now points at the wrong place and we know where the text
+ *  went; "drifted" — its text is gone, so the position is suspect and we cannot
+ *  say where it should be; "unverified" — there was nothing to search by, which
+ *  is not evidence either way.
+ *
+ *  None of these move the annotation. Where it sits is a deliberate act by
+ *  whoever placed it, and this is a report on that placement, not a correction
+ *  to it. */
+export type ReviewAnchorStatus = "ok" | "shifted" | "drifted" | "unverified";
+
+/** Where an annotation's text was found, in unscaled PDF page coordinates. */
+export interface ReviewFoundLocation {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ReviewAnchorUpdate {
+  id: string;
+  status: ReviewAnchorStatus;
+  /** Set only for "shifted": where the text is now, so the UI can offer to
+   *  show it without changing what is stored. */
+  foundAt?: ReviewFoundLocation;
+}
+
+/** A request from elsewhere in the app — the editor gutter — to reveal one
+ *  annotation in the PDF. The counter lets the same annotation be requested
+ *  twice in a row, mirroring the preview store's location request. */
+export interface ReviewSelectionRequest {
+  id: string;
+  requestId: number;
+}
+
+export interface ReviewAnchorCheck {
+  /** Fingerprint of the PDF this annotation was last checked against. */
+  fingerprint: string;
+  status: ReviewAnchorStatus;
+  /** Where the annotation's text turned up, when it turned up elsewhere. */
+  foundAt?: ReviewFoundLocation;
+}
 
 export interface ReviewComment {
   id: string;
@@ -52,6 +110,11 @@ export interface ReviewComment {
   /** Highlight colour token (see REVIEW_HIGHLIGHT_COLORS); absent for
    *  comments and for highlights saved before colours existed. */
   color?: string;
+  /** Free-form labels, normalised (see lib/review-tags). Absent, not empty,
+   *  when untagged — keeps untagged annotations out of everyone's diffs. */
+  tags?: string[];
+  /** Set only when kind is "drawing". */
+  drawing?: ReviewDrawing;
   replies: ReviewReply[];
   createdAt: string;
   updatedAt: string;
@@ -78,6 +141,8 @@ interface AddReviewCommentInput {
   anchor: ReviewAnchor;
   kind?: ReviewAnnotationKind;
   color?: string;
+  tags?: string[];
+  drawing?: ReviewDrawing;
 }
 
 interface ReviewState {
@@ -86,11 +151,25 @@ interface ReviewState {
   loading: boolean;
   /** Resolved author name used for new annotations and replies. */
   reviewer: string;
+  /** Which PDF version each anchor was last verified against, and how that
+   *  went. Deliberately in memory only: persisting it would rewrite every
+   *  review file on every recompile, and it costs one pass per PDF to redo. */
+  anchorChecks: Map<string, ReviewAnchorCheck>;
+  selectionRequest: ReviewSelectionRequest | null;
   loadProject: (projectRoot: string) => Promise<void>;
   clearProject: () => void;
   addComment: (input: AddReviewCommentInput) => ReviewComment;
   addReply: (id: string, body: string) => void;
   setCommentStatus: (id: string, status: ReviewComment["status"]) => void;
+  setCommentTags: (id: string, tags: string[]) => void;
+  /** Ask the preview to select and scroll to one annotation. */
+  requestSelection: (id: string) => void;
+  /** Record the outcome of an anchor check. Nothing is written to disk: the
+   *  check is a report, and the annotations themselves are unchanged. */
+  applyAnchorUpdates: (
+    updates: ReviewAnchorUpdate[],
+    fingerprint: string,
+  ) => void;
   deleteComment: (id: string) => void;
 }
 
@@ -151,17 +230,53 @@ function isReviewReply(value: unknown): value is ReviewReply {
   );
 }
 
+const DRAWING_TOOLS: ReviewDrawingTool[] = [
+  "freehand",
+  "line",
+  "arrow",
+  "box",
+  "ellipse",
+];
+
+function isReviewPoint(value: unknown): value is ReviewPoint {
+  if (!value || typeof value !== "object") return false;
+  const point = value as Partial<ReviewPoint>;
+  return typeof point.x === "number" && typeof point.y === "number";
+}
+
+function isReviewDrawing(value: unknown): value is ReviewDrawing {
+  if (!value || typeof value !== "object") return false;
+  const drawing = value as Partial<ReviewDrawing>;
+  return (
+    DRAWING_TOOLS.includes(drawing.tool as ReviewDrawingTool) &&
+    Array.isArray(drawing.points) &&
+    drawing.points.length > 0 &&
+    drawing.points.every(isReviewPoint) &&
+    (drawing.strokeWidth === undefined ||
+      typeof drawing.strokeWidth === "number")
+  );
+}
+
 function isReviewComment(value: unknown): value is ReviewComment {
   if (!value || typeof value !== "object") return false;
   const comment = value as Partial<ReviewComment>;
+  // A drawing with no stroke would be an annotation nobody can see or click.
+  if (comment.kind === "drawing" && !isReviewDrawing(comment.drawing)) {
+    return false;
+  }
   return (
     typeof comment.id === "string" &&
-    (comment.kind === "comment" || comment.kind === "highlight") &&
+    (comment.kind === "comment" ||
+      comment.kind === "highlight" ||
+      comment.kind === "drawing") &&
     typeof comment.documentRoot === "string" &&
     typeof comment.author === "string" &&
     typeof comment.body === "string" &&
     (comment.status === "open" || comment.status === "resolved") &&
     (comment.color === undefined || typeof comment.color === "string") &&
+    (comment.tags === undefined ||
+      (Array.isArray(comment.tags) &&
+        comment.tags.every((tag) => typeof tag === "string"))) &&
     typeof comment.createdAt === "string" &&
     typeof comment.updatedAt === "string" &&
     Array.isArray(comment.replies) &&
@@ -283,9 +398,11 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   comments: [],
   loading: false,
   reviewer: FALLBACK_REVIEWER,
+  anchorChecks: new Map(),
+  selectionRequest: null,
 
   loadProject: async (projectRoot) => {
-    set({ projectRoot, comments: [], loading: true });
+    set({ projectRoot, comments: [], loading: true, anchorChecks: new Map() });
     try {
       const reviewer = await resolveReviewerName();
       let comments = await loadReviewDirectory(projectRoot);
@@ -310,7 +427,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       }
 
       if (get().projectRoot === projectRoot) {
-        set({ comments, loading: false, reviewer });
+        set({ comments, loading: false, reviewer, anchorChecks: new Map() });
       }
     } catch (error) {
       log.error("Failed to load review annotations", {
@@ -322,7 +439,14 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     }
   },
 
-  clearProject: () => set({ projectRoot: null, comments: [], loading: false }),
+  clearProject: () =>
+    set({
+      projectRoot: null,
+      comments: [],
+      loading: false,
+      anchorChecks: new Map(),
+      selectionRequest: null,
+    }),
 
   addComment: (input) => {
     const now = new Date().toISOString();
@@ -335,6 +459,8 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
       status: "open",
       anchor: input.anchor,
       color: input.color,
+      tags: input.tags?.length ? dedupeReviewTags(input.tags) : undefined,
+      drawing: input.drawing,
       replies: [],
       createdAt: now,
       updatedAt: now,
@@ -386,11 +512,59 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     if (projectRoot) persistAuthors(projectRoot, comments, [touchedAuthor]);
   },
 
+  setCommentTags: (id, tags) => {
+    const normalized = dedupeReviewTags(tags);
+    let touchedAuthor: string | null = null;
+    const comments = get().comments.map((comment) => {
+      if (comment.id !== id) return comment;
+      const current = comment.tags ?? [];
+      if (
+        current.length === normalized.length &&
+        current.every((tag, index) => tag === normalized[index])
+      ) {
+        return comment;
+      }
+      touchedAuthor = comment.author;
+      return {
+        ...comment,
+        tags: normalized.length ? normalized : undefined,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+    if (!touchedAuthor) return;
+    set({ comments });
+    const projectRoot = get().projectRoot;
+    if (projectRoot) persistAuthors(projectRoot, comments, [touchedAuthor]);
+  },
+
+  requestSelection: (id) =>
+    set((state) => ({
+      selectionRequest: {
+        id,
+        requestId: (state.selectionRequest?.requestId ?? 0) + 1,
+      },
+    })),
+
+  applyAnchorUpdates: (updates, fingerprint) => {
+    if (updates.length === 0) return;
+    const anchorChecks = new Map(get().anchorChecks);
+    for (const update of updates) {
+      anchorChecks.set(update.id, {
+        fingerprint,
+        status: update.status,
+        foundAt: update.foundAt,
+      });
+    }
+    set({ anchorChecks });
+  },
+
   deleteComment: (id) => {
     const target = get().comments.find((comment) => comment.id === id);
     if (!target) return;
     const comments = get().comments.filter((comment) => comment.id !== id);
-    set({ comments });
+    const anchorChecks = new Map(get().anchorChecks);
+    anchorChecks.delete(id);
+    set({ comments, anchorChecks });
     const projectRoot = get().projectRoot;
     if (projectRoot) persistAuthors(projectRoot, comments, [target.author]);
   },

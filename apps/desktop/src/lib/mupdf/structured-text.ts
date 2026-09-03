@@ -68,3 +68,45 @@ function normalizeLine(line: any): StructuredTextLine {
     },
   };
 }
+
+/**
+ * Text of every line whose box overlaps `rect`, joined in reading order.
+ *
+ * Gives a dragged highlight something to quote in the comments panel and —
+ * more importantly — something to search for after a recompile, when the
+ * stored box no longer lands on the same words.
+ */
+export function textInRect(
+  data: StructuredTextData,
+  rect: { x: number; y: number; width: number; height: number },
+  options: { maxChars?: number } = {},
+): string {
+  const maxChars = options.maxChars ?? 400;
+  const left = rect.x;
+  const right = rect.x + rect.width;
+  const top = rect.y;
+  const bottom = rect.y + rect.height;
+  const parts: string[] = [];
+  let total = 0;
+
+  for (const block of data.blocks) {
+    if (block?.type !== "text") continue;
+    for (const line of block.lines ?? []) {
+      const box = line.bbox;
+      if (!box) continue;
+      // Require a real overlap on both axes: a line grazing the edge of the
+      // drag box by a fraction of a point is not part of the highlight.
+      const overlapX = Math.min(right, box.x + box.w) - Math.max(left, box.x);
+      const overlapY = Math.min(bottom, box.y + box.h) - Math.max(top, box.y);
+      if (overlapX <= 1 || overlapY <= Math.min(2, box.h / 2)) continue;
+      const text = line.text.trim();
+      if (!text) continue;
+      parts.push(text);
+      total += text.length + 1;
+      if (total >= maxChars) break;
+    }
+    if (total >= maxChars) break;
+  }
+
+  return parts.join(" ").slice(0, maxChars).trim();
+}

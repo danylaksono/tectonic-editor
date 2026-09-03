@@ -13,13 +13,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  parseBibEntries,
-  parseBibtexSourceEntries,
-  replaceBibtexEntryKey,
-} from "@/lib/bibtex";
-import {
   appendBibtexSource,
+  collectExistingCitationKeys,
   createBibliographyFromSource,
+  defaultBibliographyTarget,
+  prepareBibtexEntries,
 } from "@/lib/bibliography-import";
 import type { ProjectFile } from "@/stores/document-store";
 
@@ -27,37 +25,6 @@ interface BibtexPasteFormProps {
   files: ProjectFile[];
   onBack: () => void;
   onImported: (keys: string[]) => void;
-}
-
-function defaultBibliography(files: ProjectFile[]) {
-  const bibFiles = files.filter((file) => file.type === "bib");
-  const declared = files
-    .filter((file) => file.type === "tex")
-    .flatMap((file) => {
-      const source = file.content ?? "";
-      const values = [
-        ...source.matchAll(/\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}/gi),
-        ...source.matchAll(/\\bibliography\{([^}]+)\}/gi),
-      ];
-      return values.flatMap((match) => match[1].split(","));
-    })
-    .map((value) => {
-      const trimmed = value.trim().replace(/\\/g, "/");
-      return trimmed.toLowerCase().endsWith(".bib")
-        ? trimmed
-        : `${trimmed}.bib`;
-    });
-  return (
-    bibFiles.find((file) =>
-      declared.some(
-        (path) =>
-          file.relativePath.toLowerCase() === path.toLowerCase() ||
-          file.name.toLowerCase() === path.toLowerCase(),
-      ),
-    )?.id ??
-    bibFiles[0]?.id ??
-    "__new__"
-  );
 }
 
 export function BibtexPasteForm({
@@ -68,7 +35,7 @@ export function BibtexPasteForm({
   const bibFiles = files.filter((file) => file.type === "bib");
   const [source, setSource] = useState("");
   const [targetFile, setTargetFile] = useState(() =>
-    defaultBibliography(files),
+    defaultBibliographyTarget(files),
   );
   const [newFileName, setNewFileName] = useState("references.bib");
   const [importing, setImporting] = useState(false);
@@ -77,44 +44,14 @@ export function BibtexPasteForm({
       targetFile !== "__new__" &&
       !bibFiles.some((file) => file.id === targetFile)
     ) {
-      setTargetFile(defaultBibliography(files));
+      setTargetFile(defaultBibliographyTarget(files));
     }
   }, [bibFiles, files, targetFile]);
 
-  const parsed = useMemo(() => parseBibtexSourceEntries(source), [source]);
-  const existingKeys = useMemo(
-    () =>
-      new Set(
-        bibFiles.flatMap((file) =>
-          parseBibEntries(file.content ?? "", file.relativePath).map(
-            (entry) => entry.key,
-          ),
-        ),
-      ),
-    [bibFiles],
+  const prepared = useMemo(
+    () => prepareBibtexEntries(source, collectExistingCitationKeys(files)),
+    [files, source],
   );
-  const prepared = useMemo(() => {
-    const used = new Set(existingKeys);
-    return parsed.map((entry) => {
-      const originalKey = entry.key;
-      let key = originalKey;
-      let suffix = 2;
-      while (used.has(key)) {
-        key = `${originalKey}${suffix}`;
-        suffix += 1;
-      }
-      used.add(key);
-      return {
-        originalKey,
-        key,
-        source:
-          key === originalKey
-            ? entry.source
-            : replaceBibtexEntryKey(entry, key),
-        title: entry.title,
-      };
-    });
-  }, [existingKeys, parsed]);
 
   const importEntries = async () => {
     if (prepared.length === 0) return;

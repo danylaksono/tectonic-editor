@@ -216,6 +216,37 @@ export interface SynctexViewResult {
   height: number;
 }
 
+export interface SynctexViewTarget {
+  file: string;
+  line: number;
+}
+
+/**
+ * Resolve many source locations in one pass.
+ *
+ * `synctexView` reads and parses the whole synctex file per call — fine for a
+ * click, far too slow for a document's worth of review annotations. Results are
+ * index-aligned with `targets`; anything unresolved comes back as null.
+ */
+export async function synctexViewBatch(
+  projectDir: string,
+  targets: SynctexViewTarget[],
+): Promise<(SynctexViewResult | null)[]> {
+  if (targets.length === 0) return [];
+  try {
+    return await invoke<(SynctexViewResult | null)[]>("synctex_view_batch", {
+      projectDir,
+      targets,
+    });
+  } catch (err) {
+    log.debug("SyncTeX batch forward lookup failed", {
+      count: targets.length,
+      error: String(err),
+    });
+    return targets.map(() => null);
+  }
+}
+
 export async function synctexView(
   projectDir: string,
   file: string,

@@ -11,6 +11,12 @@ import type { StructuredTextData, LinkData, Rect } from "@/lib/mupdf/types";
 import { MessageSquareIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
+import {
+  DEFAULT_STROKE_WIDTH,
+  drawingPath,
+  type ReviewDrawingTool,
+  type ReviewPoint,
+} from "@/lib/review-drawing";
 import { citationKeyFromDest } from "@/lib/pdf-citation-preview";
 
 const log = createLogger("mupdf-page");
@@ -23,8 +29,15 @@ export interface MupdfReviewAnnotation {
   width: number;
   height: number;
   kind: "text" | "point";
-  /** Highlights render as a clickable wash without the comment bubble. */
-  annotationKind: "comment" | "highlight";
+  /** Highlights render as a clickable wash without the comment bubble;
+   *  drawings render as ink in an SVG overlay. */
+  annotationKind: "comment" | "highlight" | "drawing";
+  /** Set only when annotationKind is "drawing". */
+  drawing?: {
+    tool: ReviewDrawingTool;
+    points: ReviewPoint[];
+    strokeWidth?: number;
+  };
   status: "open" | "resolved";
   /** Highlight colour token; falls back to yellow. */
   color?: string;
@@ -390,9 +403,55 @@ export const MupdfPage = memo(function MupdfPage({
         />
       )}
 
+      {reviewAnnotations.some((annotation) => annotation.drawing) && (
+        <svg
+          className="pointer-events-none absolute inset-0 z-[4] size-full"
+          viewBox={`0 0 ${pageWidth} ${pageHeight}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <title>Review drawings</title>
+          {reviewAnnotations.map((annotation) =>
+            annotation.drawing ? (
+              <path
+                key={annotation.id}
+                d={drawingPath(
+                  annotation.drawing.tool,
+                  annotation.drawing.points,
+                )}
+                fill="none"
+                stroke={
+                  annotation.status === "resolved"
+                    ? "currentColor"
+                    : resolveReviewHighlightColor(annotation.color).stroke
+                }
+                strokeOpacity={annotation.status === "resolved" ? 0.35 : 1}
+                strokeWidth={
+                  annotation.drawing.strokeWidth ?? DEFAULT_STROKE_WIDTH
+                }
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                // Only the ink is clickable, so a big loop does not swallow
+                // clicks meant for the page inside it.
+                style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                className={cn(
+                  selectedReviewAnnotationId === annotation.id &&
+                    "drop-shadow-[0_0_3px_rgba(59,130,246,0.9)]",
+                )}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  onSelectReviewAnnotation?.(annotation.id);
+                }}
+              />
+            ) : null,
+          )}
+        </svg>
+      )}
+
       {reviewAnnotations.map((annotation) => (
         <div key={annotation.id}>
           {annotation.kind === "text" &&
+            annotation.annotationKind !== "drawing" &&
             (annotation.annotationKind === "highlight" ? (
               // Highlights are directly clickable — there is no bubble marker.
               <button

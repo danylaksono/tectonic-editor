@@ -755,6 +755,7 @@ pub fn run() {
             latex::compile_latex,
             latex::synctex_edit,
             latex::synctex_view,
+            latex::synctex_view_batch,
             latex::detect_texlive,
             metadata::lookup_reference,
             metadata::search_references,

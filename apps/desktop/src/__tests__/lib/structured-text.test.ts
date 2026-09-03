@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { normalizeStructuredText } from "@/lib/mupdf/structured-text";
+import {
+  normalizeStructuredText,
+  textInRect,
+} from "@/lib/mupdf/structured-text";
 
 /**
  * The shape MuPDF 1.27 actually emits, captured from
@@ -136,5 +139,71 @@ describe("normalizeStructuredText", () => {
   it("handles a page with no blocks at all", () => {
     expect(normalizeStructuredText({}).blocks).toEqual([]);
     expect(normalizeStructuredText(null).blocks).toEqual([]);
+  });
+});
+
+describe("textInRect", () => {
+  const line = (text: string, x: number, y: number, w = 200, h = 12) => ({
+    bbox: { x, y, w, h },
+    wmode: 0,
+    x,
+    y: y + h,
+    text,
+    font: { name: "", family: "", size: 10, weight: "normal", style: "normal" },
+  });
+
+  const page = {
+    blocks: [
+      {
+        type: "text" as const,
+        bbox: { x: 50, y: 100, w: 400, h: 60 },
+        lines: [
+          line("First line of the paragraph", 50, 100),
+          line("second line of the paragraph", 50, 116),
+          line("a line well below the box", 50, 400),
+        ],
+      },
+    ],
+  };
+
+  it("reads the lines a dragged box actually covers", () => {
+    expect(textInRect(page, { x: 40, y: 98, width: 300, height: 32 })).toBe(
+      "First line of the paragraph second line of the paragraph",
+    );
+  });
+
+  it("ignores a line the box only grazes", () => {
+    // The box stops 1pt into the second line - not enough to count as covered.
+    expect(textInRect(page, { x: 40, y: 98, width: 300, height: 19 })).toBe(
+      "First line of the paragraph",
+    );
+  });
+
+  it("reads the line under a pin from a thin full-width band", () => {
+    expect(textInRect(page, { x: 0, y: 104, width: 100000, height: 12 })).toBe(
+      "First line of the paragraph",
+    );
+  });
+
+  it("returns nothing for a box over empty space", () => {
+    expect(textInRect(page, { x: 50, y: 250, width: 100, height: 40 })).toBe(
+      "",
+    );
+  });
+
+  it("caps how much text one annotation carries", () => {
+    const long = {
+      blocks: [
+        {
+          type: "text" as const,
+          bbox: { x: 0, y: 0, w: 400, h: 400 },
+          lines: Array.from({ length: 40 }, (_, i) =>
+            line("x".repeat(30), 0, i * 16),
+          ),
+        },
+      ],
+    };
+    const result = textInRect(long, { x: 0, y: 0, width: 400, height: 1000 });
+    expect(result.length).toBeLessThanOrEqual(400);
   });
 });

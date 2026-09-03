@@ -1,4 +1,9 @@
 import { create } from "zustand";
+import {
+  DEFAULT_REVIEW_TAGS,
+  dedupeReviewTags,
+  MAX_SUGGESTED_REVIEW_TAGS,
+} from "@/lib/review-tags";
 import { persist } from "zustand/middleware";
 import type { EditorHighlightTheme, WorkspacePalette } from "@/lib/appearance";
 import { DEFAULT_LANGUAGETOOL_URL } from "@/lib/language-tool";
@@ -70,6 +75,11 @@ interface SettingsState {
    *  just the default for the next highlight. */
   reviewHighlightColor: string;
   setReviewHighlightColor: (color: string) => void;
+  /** The tag vocabulary offered when tagging a review annotation. Suggestions
+   *  only — any tag can still be typed — but making it the user's own list is
+   *  what lets tags match how they actually sort their own notes. */
+  reviewTags: string[];
+  setReviewTags: (tags: string[]) => void;
   /** Lightweight PDF preview for low-memory / low-power machines: renders
    *  pages at standard resolution (no DPR upscaling, lower pixel cap), skips
    *  the text-selection and link layers, prerenders fewer offscreen pages,
@@ -117,6 +127,11 @@ export const useSettingsStore = create<SettingsState>()(
       setLatexStyleHints: (enabled) => set({ latexStyleHints: enabled }),
       reviewHighlightColor: "yellow",
       setReviewHighlightColor: (color) => set({ reviewHighlightColor: color }),
+      reviewTags: [...DEFAULT_REVIEW_TAGS],
+      setReviewTags: (tags) =>
+        set({
+          reviewTags: dedupeReviewTags(tags, MAX_SUGGESTED_REVIEW_TAGS),
+        }),
       simplePdfPreview: false,
       setSimplePdfPreview: (enabled) => set({ simplePdfPreview: enabled }),
     }),
@@ -158,6 +173,13 @@ export const useSettingsStore = create<SettingsState>()(
         }
         if (s && typeof s.reviewHighlightColor !== "string") {
           s.reviewHighlightColor = "yellow";
+        }
+        if (
+          s &&
+          (!Array.isArray(s.reviewTags) ||
+            !s.reviewTags.every((tag: unknown) => typeof tag === "string"))
+        ) {
+          s.reviewTags = [...DEFAULT_REVIEW_TAGS];
         }
         if (s && typeof s.simplePdfPreview !== "boolean") {
           s.simplePdfPreview = false;

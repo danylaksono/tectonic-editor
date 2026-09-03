@@ -34,6 +34,15 @@ import {
   type ViewHistory,
 } from "@/lib/pdf-view-history";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
+import {
+  DEFAULT_STROKE_WIDTH,
+  drawingBounds,
+  drawingPath,
+  isTwoPointTool,
+  simplifyStroke,
+  type ReviewDrawingTool,
+  type ReviewPoint,
+} from "@/lib/review-drawing";
 import { useSettingsStore } from "@/stores/settings-store";
 import { createLogger } from "@/lib/debug/logger";
 import { scrollBehavior } from "@/lib/utils";
@@ -87,6 +96,16 @@ export interface PdfHighlightLocation {
 }
 
 export type PdfReviewAnnotation = MupdfReviewAnnotation;
+
+export interface PdfDrawingTarget {
+  page: number;
+  tool: ReviewDrawingTool;
+  /** Page-relative PDF points. */
+  points: ReviewPoint[];
+  strokeWidth: number;
+  /** Bounding box of the stroke, for the annotation's anchor. */
+  bounds: { x: number; y: number; width: number; height: number };
+}
 
 export interface PdfReviewTarget {
   kind: "text" | "point";
@@ -153,6 +172,15 @@ interface PdfViewerProps {
   selectedReviewAnnotationId?: string | null;
   onSelectReviewAnnotation?: (id: string) => void;
   onAddReviewComment?: (target: PdfReviewTarget) => void;
+  /** Fired once the MuPDF document behind the current bytes is open, so the
+   *  preview can run work that needs the document itself (extracting the text
+   *  under a highlight, re-anchoring review annotations) without opening a
+   *  second copy of the PDF in the WASM heap. */
+  onDocumentReady?: (docId: number, pageCount: number) => void;
+  /** Armed drawing tool, or null when the pencil is not in use. */
+  drawTool?: ReviewDrawingTool | null;
+  /** Fired with a finished stroke, in page-relative PDF coordinates. */
+  onPlaceDrawing?: (target: PdfDrawingTarget) => void;
   /** Review "comment pin" tool: clicks place a point comment instead of
    *  interacting with the text layer. */
   commentPlacementMode?: boolean;
@@ -196,6 +224,9 @@ export function PdfViewer({
   selectedReviewAnnotationId,
   onSelectReviewAnnotation,
   onAddReviewComment,
+  onDocumentReady,
+  drawTool = null,
+  onPlaceDrawing,
   commentPlacementMode = false,
   onPlacePointComment,
   highlightPlacementMode = false,
@@ -290,6 +321,9 @@ export function PdfViewer({
   );
   const [dragEnd, setDragEnd] = useState<{ x: number; y: number } | null>(null);
   const [dragPageNum, setDragPageNum] = useState(0);
+  /** In-progress stroke, in client coordinates — converted to page space only
+   *  when the pen lifts, so scrolling mid-stroke cannot warp what was drawn. */
+  const [drawPoints, setDrawPoints] = useState<ReviewPoint[]>([]);
 
   const numPages = pageSizes.length;
 
@@ -484,6 +518,7 @@ export function PdfViewer({
       }
       isFirstLoad.current = false;
       onLoadSuccess?.(syncResult.pageSizes.length);
+      onDocumentReady?.(syncResult.docId, syncResult.pageSizes.length);
 
       if (rootFileId) {
         const targetPage = scrollPositionCache.get(rootFileId) ?? 0;
@@ -517,6 +552,7 @@ export function PdfViewer({
         }
         isFirstLoad.current = false;
         onLoadSuccess?.(sizes.length);
+        onDocumentReady?.(docId, sizes.length);
 
         const targetPage = savedPageRef.current;
         if (targetPage > 0) {
@@ -1132,12 +1168,15 @@ export function PdfViewer({
     return () => container.removeEventListener("click", handleClick, true);
   }, [openPdfHref]);
 
-  // The capture tool and the review highlighter share the drag-a-box gesture.
+  // The capture tool, the review highlighter and the pencil all begin with a
+  // press-drag-release on a page; what they do with it differs.
   const dragMode = captureMode
     ? ("capture" as const)
     : highlightPlacementMode
       ? ("highlight" as const)
-      : null;
+      : drawTool
+        ? ("draw" as const)
+        : null;
 
   // ESC during a drag mode: cancel drag (or capture mode itself)
   useEffect(() => {
@@ -1147,6 +1186,7 @@ export function PdfViewer({
         if (dragStart) {
           setDragStart(null);
           setDragEnd(null);
+          setDrawPoints([]);
         } else if (captureMode) {
           onCancelCapture?.();
         }
@@ -1171,6 +1211,9 @@ export function PdfViewer({
       setDragPageNum(pageNum);
       setDragStart({ x: e.clientX, y: e.clientY });
       setDragEnd(null);
+      setDrawPoints(
+        dragMode === "draw" ? [{ x: e.clientX, y: e.clientY }] : [],
+      );
     },
     [dragMode],
   );
@@ -1179,8 +1222,17 @@ export function PdfViewer({
     (e: React.MouseEvent) => {
       if (!dragMode || !dragStart) return;
       setDragEnd({ x: e.clientX, y: e.clientY });
+      if (dragMode !== "draw") return;
+      const point = { x: e.clientX, y: e.clientY };
+      setDrawPoints((points) =>
+        // A shape is only ever its two ends, however far the pointer wandered
+        // on the way; freehand keeps everything and is thinned on release.
+        drawTool && isTwoPointTool(drawTool)
+          ? [points[0] ?? point, point]
+          : [...points, point],
+      );
     },
-    [dragMode, dragStart],
+    [dragMode, dragStart, drawTool],
   );
 
   const handleCaptureMouseUp = useCallback(
@@ -1193,6 +1245,38 @@ export function PdfViewer({
       const end = { x: e.clientX, y: e.clientY };
       const w = Math.abs(end.x - dragStart.x);
       const h = Math.abs(end.y - dragStart.y);
+
+      // Pencil: convert the whole stroke to page-relative PDF coordinates.
+      if (dragMode === "draw") {
+        const points = [...drawPoints, end];
+        setDragStart(null);
+        setDragEnd(null);
+        setDrawPoints([]);
+        if (!drawTool || !onPlaceDrawing) return;
+        // A click with no movement is a misfire, not a mark.
+        if (w < 3 && h < 3) return;
+        const pageEl = containerRef.current?.querySelector(
+          `.mupdf-page[data-page-number="${dragPageNum}"]`,
+        ) as HTMLElement | null;
+        if (!pageEl) return;
+        const pageRect = pageEl.getBoundingClientRect();
+        const currentScale = scaleRef.current;
+        const pagePoints = simplifyStroke(
+          points.map((point) => ({
+            x: (point.x - pageRect.left) / currentScale,
+            y: (point.y - pageRect.top) / currentScale,
+          })),
+        );
+        if (pagePoints.length < 2) return;
+        onPlaceDrawing({
+          page: dragPageNum,
+          tool: drawTool,
+          points: pagePoints,
+          strokeWidth: DEFAULT_STROKE_WIDTH,
+          bounds: drawingBounds(pagePoints, DEFAULT_STROKE_WIDTH),
+        });
+        return;
+      }
 
       // Highlighter: convert the dragged box to page-relative PDF coordinates.
       if (dragMode === "highlight") {
@@ -1275,7 +1359,16 @@ export function PdfViewer({
       setDragStart(null);
       setDragEnd(null);
     },
-    [dragMode, dragStart, dragPageNum, onCapture, onPlaceHighlight],
+    [
+      dragMode,
+      dragStart,
+      dragPageNum,
+      drawPoints,
+      drawTool,
+      onCapture,
+      onPlaceHighlight,
+      onPlaceDrawing,
+    ],
   );
 
   // Text layer click for onTextClick; in comment-placement mode the click
@@ -1476,7 +1569,7 @@ export function PdfViewer({
                 />
               ))}
             </div>
-            {selRect && (
+            {selRect && dragMode !== "draw" && (
               <div
                 className={
                   dragMode === "highlight"
@@ -1485,6 +1578,25 @@ export function PdfViewer({
                 }
                 style={selRect}
               />
+            )}
+            {dragMode === "draw" && drawTool && drawPoints.length > 0 && (
+              // Drawn in client coordinates over the whole viewport, through
+              // the same path builder the stored drawing uses — so what you
+              // see while drawing is what gets saved.
+              <svg
+                className="pointer-events-none fixed inset-0 z-50 size-full"
+                aria-hidden="true"
+              >
+                <title>Drawing in progress</title>
+                <path
+                  d={drawingPath(drawTool, drawPoints)}
+                  fill="none"
+                  stroke={resolveReviewHighlightColor(highlightColor).stroke}
+                  strokeWidth={DEFAULT_STROKE_WIDTH * scaleRef.current}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             )}
           </div>
         </ContextMenuTrigger>

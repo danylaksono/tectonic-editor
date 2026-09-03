@@ -1,16 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2Icon,
   CircleIcon,
   CornerDownRightIcon,
+  FileDownIcon,
   FileTextIcon,
   HighlighterIcon,
   LoaderIcon,
   MessageSquareIcon,
+  PenLineIcon,
   ReplyIcon,
+  SearchIcon,
+  TagIcon,
   Trash2Icon,
+  TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
-import type { ReviewAnchor, ReviewComment } from "@/stores/review-store";
+import type {
+  ReviewAnchor,
+  ReviewAnchorCheck,
+  ReviewComment,
+  ReviewFoundLocation,
+} from "@/stores/review-store";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,19 +33,47 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { resolveReviewHighlightColor } from "@/lib/review-colors";
+import {
+  collectReviewTags,
+  dedupeReviewTags,
+  MAX_REVIEW_TAGS,
+  parseReviewTags,
+} from "@/lib/review-tags";
+import { filterReviewComments } from "@/lib/review-search";
+import { ReviewMarkdown } from "./review-markdown";
 
 interface ReviewCommentsPanelProps {
   comments: ReviewComment[];
   loading: boolean;
   selectedId: string | null;
+  /** Outcome of the last anchor check, keyed by annotation id. */
+  anchorChecks: Map<string, ReviewAnchorCheck>;
+  /** The user's tag vocabulary, offered as one-click suggestions. */
+  suggestedTags: string[];
   onSelect: (comment: ReviewComment) => void;
   onGoToSource: (comment: ReviewComment) => void;
   onSetStatus: (
     comment: ReviewComment,
     status: ReviewComment["status"],
   ) => void;
+  onSetTags: (comment: ReviewComment, tags: string[]) => void;
+  /** Hands over exactly what the panel is showing, plus a phrase describing
+   *  the filter that produced it (null when nothing is filtered out). */
+  onExport: (comments: ReviewComment[], filterNote: string | null) => void;
+  /** Scroll the PDF to where an annotation's text turned up, without touching
+   *  where the annotation itself sits. */
+  onShowFoundLocation: (location: ReviewFoundLocation) => void;
   onReply: (comment: ReviewComment, body: string) => void;
   onDelete: (comment: ReviewComment) => void;
+}
+
+/** CSS.escape is not implemented everywhere the app runs, and losing the panel
+ *  to a missing polyfill would be a poor trade for a scroll. Annotation ids are
+ *  UUIDs, so escaping quotes and backslashes is enough. */
+function escapeAttributeValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/["\\]/g, "\\$&");
 }
 
 function formatTimestamp(value: string): string {
@@ -44,6 +83,702 @@ function formatTimestamp(value: string): string {
     month: "short",
     day: "numeric",
   });
+}
+
+/** One tag, either as a filter toggle in the header or a removable chip on a
+ *  card. Deliberately monochrome — highlight colour already carries meaning
+ *  here, and a second colour axis would fight it. */
+function TagChip({
+  tag,
+  count,
+  active,
+  onClick,
+  onRemove,
+}: {
+  tag: string;
+  count?: number;
+  active?: boolean;
+  onClick?: () => void;
+  onRemove?: () => void;
+}) {
+  const content = (
+    <>
+      <span className="truncate">{tag}</span>
+      {count !== undefined && (
+        <span className="text-muted-foreground tabular-nums">{count}</span>
+      )}
+    </>
+  );
+  const className = cn(
+    "inline-flex max-w-40 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-tight transition-colors",
+    active
+      ? "border-primary/60 bg-primary/10 text-foreground"
+      : "border-border bg-muted/50 text-muted-foreground",
+    onClick && "hover:border-foreground/30 hover:text-foreground",
+  );
+
+  if (onRemove) {
+    return (
+      <span className={className}>
+        {content}
+        <button
+          type="button"
+          className="-mr-0.5 rounded-full p-0.5 text-muted-foreground hover:text-destructive"
+          aria-label={`Remove tag ${tag}`}
+          onClick={onRemove}
+        >
+          <XIcon className="size-2.5" />
+        </button>
+      </span>
+    );
+  }
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={className}
+        aria-pressed={active}
+        onClick={onClick}
+      >
+        {content}
+      </button>
+    );
+  }
+  return <span className={className}>{content}</span>;
+}
+
+function TagEditor({
+  tags,
+  knownTags,
+  suggestedTags,
+  onChange,
+  onClose,
+}: {
+  tags: string[];
+  knownTags: string[];
+  suggestedTags: string[];
+  onChange: (tags: string[]) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const listId = useRef(
+    `review-tags-${Math.random().toString(36).slice(2, 8)}`,
+  ).current;
+
+  const commit = (value: string) => {
+    const added = parseReviewTags(value);
+    if (added.length === 0) return;
+    onChange(dedupeReviewTags([...tags, ...added]));
+    setDraft("");
+  };
+
+  // Tags already in the project come first — they are the vocabulary actually
+  // in use — followed by the configured list. Anything already on this
+  // annotation is not worth suggesting again.
+  const suggestions = [...new Set([...knownTags, ...suggestedTags])]
+    .filter((tag) => !tags.includes(tag))
+    .slice(0, 12);
+
+  return (
+    <div className="mt-2 space-y-1.5 rounded-md border border-border bg-muted/30 p-2">
+      <datalist id={listId}>
+        {suggestions.map((tag) => (
+          <option key={tag} value={tag} />
+        ))}
+      </datalist>
+      <input
+        value={draft}
+        list={listId}
+        placeholder={
+          tags.length >= MAX_REVIEW_TAGS ? "Tag limit reached" : "Add a tag…"
+        }
+        disabled={tags.length >= MAX_REVIEW_TAGS}
+        className="h-7 w-full rounded border border-border bg-background px-2 text-xs outline-none focus:border-primary/60"
+        // biome-ignore lint/a11y/noAutofocus: the editor only opens on request
+        autoFocus
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => commit(draft)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === ",") {
+            event.preventDefault();
+            commit(draft);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft("");
+            onClose();
+          } else if (event.key === "Backspace" && !draft && tags.length > 0) {
+            onChange(tags.slice(0, -1));
+          }
+        }}
+      />
+      {suggestions.length > 0 && tags.length < MAX_REVIEW_TAGS && (
+        <div className="flex flex-wrap gap-1">
+          {suggestions.slice(0, 5).map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              className="rounded-full border border-border border-dashed px-2 py-0.5 text-[11px] text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+              onClick={() => onChange(dedupeReviewTags([...tags, tag]))}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ReviewCommentsPanel({
+  comments,
+  loading,
+  selectedId,
+  anchorChecks,
+  suggestedTags,
+  onSelect,
+  onGoToSource,
+  onSetStatus,
+  onSetTags,
+  onExport,
+  onShowFoundLocation,
+  onDelete,
+  onReply,
+}: ReviewCommentsPanelProps) {
+  const [showResolved, setShowResolved] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [editingTagsFor, setEditingTagsFor] = useState<string | null>(null);
+  const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [staleOnly, setStaleOnly] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const tagCounts = useMemo(() => collectReviewTags(comments), [comments]);
+  const knownTags = useMemo(
+    () => tagCounts.map((entry) => entry.tag),
+    [tagCounts],
+  );
+
+  // Both outcomes mean the same thing to the reader: this annotation no longer
+  // sits on the text it was written about.
+  const staleIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const comment of comments) {
+      const status = anchorChecks.get(comment.id)?.status;
+      if (status === "drifted" || status === "shifted") ids.add(comment.id);
+    }
+    return ids;
+  }, [comments, anchorChecks]);
+
+  // A filter for a tag nobody uses any more would silently empty the list.
+  useEffect(() => {
+    setActiveTags((current) => {
+      const kept = current.filter((tag) => knownTags.includes(tag));
+      return kept.length === current.length ? current : kept;
+    });
+  }, [knownTags]);
+  useEffect(() => {
+    if (staleOnly && staleIds.size === 0) setStaleOnly(false);
+  }, [staleOnly, staleIds]);
+
+  const visibleComments = useMemo(
+    () =>
+      filterReviewComments(comments, query)
+        .filter((comment) => showResolved || comment.status === "open")
+        .filter(
+          (comment) =>
+            activeTags.length === 0 ||
+            (comment.tags ?? []).some((tag) => activeTags.includes(tag)),
+        )
+        .filter((comment) => !staleOnly || staleIds.has(comment.id))
+        .sort((a, b) => {
+          if (a.status !== b.status) return a.status === "open" ? -1 : 1;
+          return a.anchor.page - b.anchor.page;
+        }),
+    [comments, query, showResolved, activeTags, staleOnly, staleIds],
+  );
+  const openCount = comments.filter(
+    (comment) => comment.status === "open",
+  ).length;
+
+  /** Reads back the active filters as a phrase for the exported report, so a
+   *  partial export never looks like the whole review. */
+  const filterNote = useMemo(() => {
+    const parts: string[] = [];
+    if (!showResolved) parts.push("open annotations");
+    if (activeTags.length > 0) {
+      parts.push(`tagged ${activeTags.map((tag) => `#${tag}`).join(", ")}`);
+    }
+    if (staleOnly) parts.push("no longer sitting on the text they were about");
+    if (query.trim()) parts.push(`matching "${query.trim()}"`);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }, [showResolved, activeTags, staleOnly, query]);
+
+  /** Step through the list in the order it is displayed. `predicate` narrows
+   *  the hop, which is what makes "next open" different from "next". */
+  const step = useCallback(
+    (delta: number, predicate?: (comment: ReviewComment) => boolean) => {
+      const list = predicate
+        ? visibleComments.filter(predicate)
+        : visibleComments;
+      if (list.length === 0) return;
+      const current = list.findIndex((comment) => comment.id === selectedId);
+      // Nothing selected yet: forwards starts at the top, backwards at the end.
+      const next =
+        current === -1
+          ? delta > 0
+            ? 0
+            : list.length - 1
+          : (current + delta + list.length) % list.length;
+      onSelect(list[next]);
+    },
+    [visibleComments, selectedId, onSelect],
+  );
+
+  // Keys are panel-wide rather than bound to a focused element: the point is to
+  // walk the list while reading the PDF, which means the keys have to work when
+  // focus is in the document. Anything typed into a field is left alone.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement
+      ) {
+        // Escape still gets out of the search box.
+        if (event.key === "Escape" && target === searchRef.current) {
+          event.preventDefault();
+          if (query) setQuery("");
+          else searchRef.current?.blur();
+        }
+        return;
+      }
+
+      const isOpen = (comment: ReviewComment) => comment.status === "open";
+      switch (event.key) {
+        case "j":
+        case "ArrowDown":
+          event.preventDefault();
+          step(1);
+          break;
+        case "k":
+        case "ArrowUp":
+          event.preventDefault();
+          step(-1);
+          break;
+        case "n":
+          event.preventDefault();
+          step(1, isOpen);
+          break;
+        case "N":
+          event.preventDefault();
+          step(-1, isOpen);
+          break;
+        case "/":
+          event.preventDefault();
+          searchRef.current?.focus();
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [step, query]);
+
+  // Keep the selected card in view when the selection moves by key, or when
+  // the PDF is clicked and the panel has to catch up.
+  useEffect(() => {
+    if (!selectedId) return;
+    const card = listRef.current?.querySelector<HTMLElement>(
+      `[data-annotation-id="${escapeAttributeValue(selectedId)}"]`,
+    );
+    // scrollIntoView is absent in some environments; scrolling is a nicety and
+    // must never take the panel down with it.
+    card?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedId]);
+
+  const toggleTag = (tag: string) =>
+    setActiveTags((current) =>
+      current.includes(tag)
+        ? current.filter((entry) => entry !== tag)
+        : [...current, tag],
+    );
+
+  return (
+    <aside
+      className="flex h-full w-80 shrink-0 flex-col border-border border-l bg-background"
+      aria-label="Review comments"
+    >
+      <div className="flex h-[calc(44px+var(--titlebar-height))] shrink-0 items-end justify-between border-border border-b px-3 pb-2">
+        <div>
+          <h2 className="font-medium text-sm">Review</h2>
+          <p className="text-muted-foreground text-xs">
+            {openCount} open · {comments.length} total
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant={showResolved ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => setShowResolved((value) => !value)}
+          >
+            {showResolved ? "Hide resolved" : "Show resolved"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            aria-label="Export review notes"
+            title="Export what is shown as Markdown"
+            disabled={visibleComments.length === 0}
+            onClick={() => onExport(visibleComments, filterNote)}
+          >
+            <FileDownIcon className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="relative shrink-0 border-border border-b px-3 py-2">
+        <SearchIcon className="pointer-events-none absolute top-1/2 left-5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <input
+          ref={searchRef}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search notes, quotes, #tags…"
+          aria-label="Search annotations"
+          className="h-7 w-full rounded border border-border bg-background pr-6 pl-7 text-xs outline-none focus:border-primary/60"
+        />
+        {query && (
+          <button
+            type="button"
+            className="absolute top-1/2 right-5 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+            aria-label="Clear search"
+            onClick={() => {
+              setQuery("");
+              searchRef.current?.focus();
+            }}
+          >
+            <XIcon className="size-3" />
+          </button>
+        )}
+      </div>
+
+      {(tagCounts.length > 0 || staleIds.size > 0) && (
+        <div className="flex flex-wrap gap-1 border-border border-b px-3 py-2">
+          {staleIds.size > 0 && (
+            <button
+              type="button"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] leading-tight transition-colors",
+                staleOnly
+                  ? "border-amber-500/70 bg-amber-500/15 text-foreground"
+                  : "border-amber-500/40 text-amber-600 hover:bg-amber-500/10",
+              )}
+              aria-pressed={staleOnly}
+              title="Annotations whose text has moved or gone since this PDF was built"
+              onClick={() => setStaleOnly((value) => !value)}
+            >
+              <TriangleAlertIcon className="size-3" />
+              {staleIds.size} stale
+            </button>
+          )}
+          {tagCounts.map(({ tag, count }) => (
+            <TagChip
+              key={tag}
+              tag={tag}
+              count={count}
+              active={activeTags.includes(tag)}
+              onClick={() => toggleTag(tag)}
+            />
+          ))}
+          {(activeTags.length > 0 || staleOnly) && (
+            <button
+              type="button"
+              className="rounded-full px-2 py-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+              onClick={() => {
+                setActiveTags([]);
+                setStaleOnly(false);
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto p-2">
+        {loading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground text-sm">
+            <LoaderIcon className="size-4 animate-spin" />
+            Loading comments…
+          </div>
+        ) : visibleComments.length === 0 ? (
+          <div className="px-4 py-12 text-center">
+            <MessageSquareIcon className="mx-auto mb-3 size-8 text-muted-foreground/50" />
+            <p className="font-medium text-sm">
+              {comments.length === 0
+                ? "No annotations yet"
+                : query.trim()
+                  ? "Nothing matches this search"
+                  : activeTags.length > 0 || staleOnly
+                    ? "Nothing matches this filter"
+                    : "No open annotations"}
+            </p>
+            <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+              Pick the highlighter or comment tool in the toolbar, then drag a
+              box or click on the PDF.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {visibleComments.map((comment) => {
+              const check = anchorChecks.get(comment.id);
+              const stale = staleIds.has(comment.id);
+              const foundAt =
+                check?.status === "shifted" ? check.foundAt : undefined;
+              const tags = comment.tags ?? [];
+              return (
+                <article
+                  key={comment.id}
+                  data-annotation-id={comment.id}
+                  className={cn(
+                    "rounded-lg border bg-card p-3 transition-colors",
+                    selectedId === comment.id
+                      ? "border-primary/60 ring-2 ring-primary/15"
+                      : "hover:border-foreground/20",
+                    comment.status === "resolved" && "opacity-65",
+                  )}
+                >
+                  <button
+                    type="button"
+                    className="block w-full text-left"
+                    aria-label={`Show on page ${comment.anchor.page} in the PDF`}
+                    onClick={() => onSelect(comment)}
+                  >
+                    <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
+                      {comment.status === "resolved" ? (
+                        <CheckCircle2Icon className="size-3.5 text-emerald-600" />
+                      ) : comment.kind === "highlight" ? (
+                        <HighlighterIcon
+                          className={cn(
+                            "size-3.5",
+                            resolveReviewHighlightColor(comment.color).accent,
+                          )}
+                        />
+                      ) : comment.kind === "drawing" ? (
+                        <PenLineIcon
+                          className={cn(
+                            "size-3.5",
+                            resolveReviewHighlightColor(comment.color).accent,
+                          )}
+                        />
+                      ) : (
+                        <CircleIcon className="size-3.5" />
+                      )}
+                      <span className="max-w-24 truncate font-medium text-foreground">
+                        {comment.author}
+                      </span>
+                      <span>p. {comment.anchor.page}</span>
+                      {stale && (
+                        <TriangleAlertIcon
+                          className="size-3.5 shrink-0 text-amber-600"
+                          aria-label="No longer on the text it was written about"
+                        />
+                      )}
+                      <span className="ml-auto shrink-0">
+                        {formatTimestamp(comment.createdAt)}
+                      </span>
+                    </div>
+                    {comment.anchor.selectedText && (
+                      <blockquote
+                        className={cn(
+                          "mb-2 line-clamp-3 border-l-2 pl-2 text-muted-foreground text-xs",
+                          comment.kind === "highlight"
+                            ? resolveReviewHighlightColor(comment.color).border
+                            : "border-muted-foreground/30",
+                        )}
+                      >
+                        {comment.anchor.selectedText}
+                      </blockquote>
+                    )}
+                  </button>
+
+                  {comment.body ? (
+                    <ReviewMarkdown content={comment.body} />
+                  ) : comment.kind === "highlight" ? (
+                    <p className="text-muted-foreground text-xs italic">
+                      Highlight
+                    </p>
+                  ) : comment.kind === "drawing" ? (
+                    <p className="text-muted-foreground text-xs italic">
+                      Drawing — reply to add a note
+                    </p>
+                  ) : null}
+
+                  {stale && (
+                    <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 leading-relaxed dark:text-amber-400">
+                      {foundAt ? (
+                        <>
+                          This text has moved to p. {foundAt.page}. The
+                          annotation stays where it was placed.{" "}
+                          <button
+                            type="button"
+                            className="font-medium underline underline-offset-2"
+                            onClick={() => onShowFoundLocation(foundAt)}
+                          >
+                            Show me
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          This text is no longer in the PDF, so the annotation
+                          may not be pointing at what it was written about.
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {tags.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {tags.map((tag) => (
+                        <TagChip
+                          key={tag}
+                          tag={tag}
+                          onRemove={() =>
+                            onSetTags(
+                              comment,
+                              tags.filter((entry) => entry !== tag),
+                            )
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {editingTagsFor === comment.id && (
+                    <TagEditor
+                      tags={tags}
+                      knownTags={knownTags}
+                      suggestedTags={suggestedTags}
+                      onChange={(next) => onSetTags(comment, next)}
+                      onClose={() => setEditingTagsFor(null)}
+                    />
+                  )}
+
+                  {comment.replies.length > 0 && (
+                    <div className="mt-2 space-y-2 border-border border-l-2 pl-2">
+                      {comment.replies.map((reply) => (
+                        <div key={reply.id} className="text-sm">
+                          <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
+                            <CornerDownRightIcon className="size-3" />
+                            <span className="max-w-32 truncate font-medium text-foreground">
+                              {reply.author}
+                            </span>
+                            <span className="ml-auto shrink-0">
+                              {formatTimestamp(reply.createdAt)}
+                            </span>
+                          </div>
+                          <ReviewMarkdown
+                            content={reply.body}
+                            className="mt-0.5 pl-4"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {replyingTo === comment.id && (
+                    <ReplyComposer
+                      onSubmit={(body) => {
+                        onReply(comment, body);
+                        setReplyingTo(null);
+                      }}
+                      onCancel={() => setReplyingTo(null)}
+                    />
+                  )}
+
+                  <div className="mt-3 flex items-center gap-1 border-border border-t pt-2">
+                    {comment.anchor.source && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1 px-2 text-xs"
+                        onClick={() => onGoToSource(comment)}
+                      >
+                        <FileTextIcon className="size-3.5" />
+                        Source
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1 px-2 text-xs"
+                      onClick={() =>
+                        setReplyingTo((current) =>
+                          current === comment.id ? null : comment.id,
+                        )
+                      }
+                    >
+                      <ReplyIcon className="size-3.5" />
+                      Reply
+                    </Button>
+                    <Button
+                      variant={
+                        editingTagsFor === comment.id ? "secondary" : "ghost"
+                      }
+                      size="icon"
+                      className="size-7"
+                      aria-label="Edit tags"
+                      title="Tags"
+                      onClick={() =>
+                        setEditingTagsFor((current) =>
+                          current === comment.id ? null : comment.id,
+                        )
+                      }
+                    >
+                      <TagIcon className="size-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() =>
+                        onSetStatus(
+                          comment,
+                          comment.status === "open" ? "resolved" : "open",
+                        )
+                      }
+                    >
+                      {comment.status === "open" ? "Resolve" : "Reopen"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-auto size-7 text-muted-foreground hover:text-destructive"
+                      aria-label="Delete annotation"
+                      onClick={() => onDelete(comment)}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0 border-border border-t px-3 py-1.5 text-[10px] text-muted-foreground">
+        <kbd className="font-sans">j</kbd>/<kbd className="font-sans">k</kbd>{" "}
+        move · <kbd className="font-sans">n</kbd> next open ·{" "}
+        <kbd className="font-sans">/</kbd> search
+      </div>
+    </aside>
+  );
 }
 
 function ReplyComposer({
@@ -65,7 +800,7 @@ function ReplyComposer({
       <Textarea
         value={body}
         onChange={(event) => setBody(event.target.value)}
-        placeholder="Reply…"
+        placeholder="Reply…  **bold**, $x^2$"
         className="min-h-16 resize-y text-sm"
         autoFocus
         onKeyDown={(event) => {
@@ -99,223 +834,6 @@ function ReplyComposer({
   );
 }
 
-export function ReviewCommentsPanel({
-  comments,
-  loading,
-  selectedId,
-  onSelect,
-  onGoToSource,
-  onSetStatus,
-  onReply,
-  onDelete,
-}: ReviewCommentsPanelProps) {
-  const [showResolved, setShowResolved] = useState(false);
-  const [replyingTo, setReplyingTo] = useState<string | null>(null);
-  const visibleComments = useMemo(
-    () =>
-      comments
-        .filter((comment) => showResolved || comment.status === "open")
-        .sort((a, b) => {
-          if (a.status !== b.status) return a.status === "open" ? -1 : 1;
-          return a.anchor.page - b.anchor.page;
-        }),
-    [comments, showResolved],
-  );
-  const openCount = comments.filter(
-    (comment) => comment.status === "open",
-  ).length;
-
-  return (
-    <aside
-      className="flex h-full w-80 shrink-0 flex-col border-border border-l bg-background"
-      aria-label="Review comments"
-    >
-      <div className="flex h-[calc(44px+var(--titlebar-height))] shrink-0 items-end justify-between border-border border-b px-3 pb-2">
-        <div>
-          <h2 className="font-medium text-sm">Review</h2>
-          <p className="text-muted-foreground text-xs">
-            {openCount} open · {comments.length} total
-          </p>
-        </div>
-        <Button
-          variant={showResolved ? "secondary" : "ghost"}
-          size="sm"
-          className="h-7 px-2 text-xs"
-          onClick={() => setShowResolved((value) => !value)}
-        >
-          {showResolved ? "Hide resolved" : "Show resolved"}
-        </Button>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 py-10 text-muted-foreground text-sm">
-            <LoaderIcon className="size-4 animate-spin" />
-            Loading comments…
-          </div>
-        ) : visibleComments.length === 0 ? (
-          <div className="px-4 py-12 text-center">
-            <MessageSquareIcon className="mx-auto mb-3 size-8 text-muted-foreground/50" />
-            <p className="font-medium text-sm">
-              {comments.length === 0
-                ? "No annotations yet"
-                : "No open annotations"}
-            </p>
-            <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-              Pick the highlighter or comment tool in the toolbar, then drag a
-              box or click on the PDF.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {visibleComments.map((comment) => (
-              <article
-                key={comment.id}
-                className={cn(
-                  "rounded-lg border bg-card p-3 transition-colors",
-                  selectedId === comment.id
-                    ? "border-primary/60 ring-2 ring-primary/15"
-                    : "hover:border-foreground/20",
-                  comment.status === "resolved" && "opacity-65",
-                )}
-              >
-                <button
-                  type="button"
-                  className="block w-full text-left"
-                  onClick={() => onSelect(comment)}
-                >
-                  <div className="mb-2 flex items-center gap-2 text-muted-foreground text-xs">
-                    {comment.status === "resolved" ? (
-                      <CheckCircle2Icon className="size-3.5 text-emerald-600" />
-                    ) : comment.kind === "highlight" ? (
-                      <HighlighterIcon
-                        className={cn(
-                          "size-3.5",
-                          resolveReviewHighlightColor(comment.color).accent,
-                        )}
-                      />
-                    ) : (
-                      <CircleIcon className="size-3.5" />
-                    )}
-                    <span className="max-w-24 truncate font-medium text-foreground">
-                      {comment.author}
-                    </span>
-                    <span>p. {comment.anchor.page}</span>
-                    <span className="ml-auto shrink-0">
-                      {formatTimestamp(comment.createdAt)}
-                    </span>
-                  </div>
-                  {comment.anchor.selectedText && (
-                    <blockquote
-                      className={cn(
-                        "mb-2 line-clamp-3 border-l-2 pl-2 text-muted-foreground text-xs",
-                        comment.kind === "highlight"
-                          ? resolveReviewHighlightColor(comment.color).border
-                          : "border-muted-foreground/30",
-                      )}
-                    >
-                      {comment.anchor.selectedText}
-                    </blockquote>
-                  )}
-                  {comment.body ? (
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {comment.body}
-                    </p>
-                  ) : comment.kind === "highlight" ? (
-                    <p className="text-muted-foreground text-xs italic">
-                      Highlight
-                    </p>
-                  ) : null}
-                </button>
-
-                {comment.replies.length > 0 && (
-                  <div className="mt-2 space-y-2 border-border border-l-2 pl-2">
-                    {comment.replies.map((reply) => (
-                      <div key={reply.id} className="text-sm">
-                        <div className="flex items-center gap-1.5 text-muted-foreground text-xs">
-                          <CornerDownRightIcon className="size-3" />
-                          <span className="max-w-32 truncate font-medium text-foreground">
-                            {reply.author}
-                          </span>
-                          <span className="ml-auto shrink-0">
-                            {formatTimestamp(reply.createdAt)}
-                          </span>
-                        </div>
-                        <p className="mt-0.5 whitespace-pre-wrap pl-4 leading-relaxed">
-                          {reply.body}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {replyingTo === comment.id && (
-                  <ReplyComposer
-                    onSubmit={(body) => {
-                      onReply(comment, body);
-                      setReplyingTo(null);
-                    }}
-                    onCancel={() => setReplyingTo(null)}
-                  />
-                )}
-
-                <div className="mt-3 flex items-center gap-1 border-border border-t pt-2">
-                  {comment.anchor.source && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 gap-1 px-2 text-xs"
-                      onClick={() => onGoToSource(comment)}
-                    >
-                      <FileTextIcon className="size-3.5" />
-                      Source
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 gap-1 px-2 text-xs"
-                    onClick={() =>
-                      setReplyingTo((current) =>
-                        current === comment.id ? null : comment.id,
-                      )
-                    }
-                  >
-                    <ReplyIcon className="size-3.5" />
-                    Reply
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() =>
-                      onSetStatus(
-                        comment,
-                        comment.status === "open" ? "resolved" : "open",
-                      )
-                    }
-                  >
-                    {comment.status === "open" ? "Resolve" : "Reopen"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="ml-auto size-7 text-muted-foreground hover:text-destructive"
-                    aria-label="Delete annotation"
-                    onClick={() => onDelete(comment)}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </Button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
-    </aside>
-  );
-}
-
 export interface ReviewCommentDraft {
   anchor: ReviewAnchor;
   documentRoot: string;
@@ -323,20 +841,34 @@ export interface ReviewCommentDraft {
 
 interface ReviewCommentDialogProps {
   draft: ReviewCommentDraft | null;
+  /** Tags already in use in this project, plus the configured vocabulary,
+   *  offered as suggestions. */
+  knownTags: string[];
   onOpenChange: (open: boolean) => void;
-  onSave: (body: string) => void;
+  onSave: (body: string, tags: string[]) => void;
 }
 
 export function ReviewCommentDialog({
   draft,
+  knownTags,
   onOpenChange,
   onSave,
 }: ReviewCommentDialogProps) {
   const [body, setBody] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [preview, setPreview] = useState(false);
 
   useEffect(() => {
-    if (draft) setBody("");
+    if (draft) {
+      setBody("");
+      setTags([]);
+      setPreview(false);
+    }
   }, [draft]);
+
+  const suggestions = [...new Set(knownTags)]
+    .filter((tag) => !tags.includes(tag))
+    .slice(0, 6);
 
   return (
     <Dialog open={!!draft} onOpenChange={onOpenChange}>
@@ -349,28 +881,78 @@ export function ReviewCommentDialog({
             {draft.anchor.selectedText}
           </blockquote>
         )}
-        <Textarea
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-          placeholder="What should be changed or checked?"
-          className="min-h-28 resize-y"
-          autoFocus
-          onKeyDown={(event) => {
-            if (
-              event.key === "Enter" &&
-              (event.metaKey || event.ctrlKey) &&
-              body.trim()
-            ) {
-              event.preventDefault();
-              onSave(body.trim());
-            }
-          }}
-        />
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground">
+              Markdown and <span className="font-mono">$math$</span> supported
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              disabled={!body.trim()}
+              onClick={() => setPreview((value) => !value)}
+            >
+              {preview ? "Write" : "Preview"}
+            </Button>
+          </div>
+          {preview ? (
+            <div className="min-h-28 rounded-md border border-border bg-muted/30 px-3 py-2">
+              <ReviewMarkdown content={body} />
+            </div>
+          ) : (
+            <Textarea
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              placeholder="What should be changed or checked?"
+              className="min-h-28 resize-y"
+              autoFocus
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  (event.metaKey || event.ctrlKey) &&
+                  body.trim()
+                ) {
+                  event.preventDefault();
+                  onSave(body.trim(), tags);
+                }
+              }}
+            />
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex flex-wrap gap-1">
+            {tags.map((tag) => (
+              <TagChip
+                key={tag}
+                tag={tag}
+                onRemove={() =>
+                  setTags((current) => current.filter((entry) => entry !== tag))
+                }
+              />
+            ))}
+            {suggestions.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className="rounded-full border border-border border-dashed px-2 py-0.5 text-[11px] text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                onClick={() =>
+                  setTags((current) => dedupeReviewTags([...current, tag]))
+                }
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!body.trim()} onClick={() => onSave(body.trim())}>
+          <Button
+            disabled={!body.trim()}
+            onClick={() => onSave(body.trim(), tags)}
+          >
             Add comment
           </Button>
         </DialogFooter>

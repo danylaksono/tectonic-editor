@@ -3,17 +3,23 @@ import { persist } from "zustand/middleware";
 import {
   validateApiKey,
   validateDesktop,
+  probeDesktopItems,
   fetchCollections,
   importCollection,
   syncCollection,
+  searchZoteroItems,
+  fetchCollectionItems,
   startOAuth,
   completeOAuth,
   cancelOAuth,
   type ZoteroConnection,
   type ZoteroConnectionMode,
   type ZoteroCollection,
+  type ZoteroSearchResult,
+  type ZoteroItemPage,
 } from "@/lib/zotero-api";
 import { useDocumentStore } from "@/stores/document-store";
+import { applyHouseKeys } from "@/lib/bibliography-import";
 import { createFileOnDisk } from "@/lib/tauri/fs";
 import { createLogger } from "@/lib/debug/logger";
 
@@ -59,8 +65,11 @@ interface ZoteroState {
   collections: ZoteroCollection[];
   isLoadingCollections: boolean;
   desktopStatus: ZoteroDesktopStatus;
+  /** null = not probed. false = Zotero Desktop answers collections but not items. */
+  desktopItemsAvailable: boolean | null;
 
   checkDesktop: () => Promise<boolean>;
+  probeDesktopCapabilities: () => Promise<void>;
   connectWithDesktop: () => Promise<boolean>;
   connectWithOAuth: () => Promise<boolean>;
   connectWithApiKey: (apiKey: string) => Promise<boolean>;
@@ -68,6 +77,15 @@ interface ZoteroState {
   disconnect: () => void;
   revalidate: () => Promise<void>;
   loadCollections: () => Promise<void>;
+  searchLibrary: (
+    query: string,
+    limit?: number,
+  ) => Promise<ZoteroSearchResult[]>;
+  browseCollection: (
+    collectionKey: string | null,
+    start?: number,
+    limit?: number,
+  ) => Promise<ZoteroItemPage>;
   importCollectionToBib: (
     collectionKey: string | null,
     name: string,
@@ -136,12 +154,14 @@ export const useZoteroStore = create<ZoteroState>()(
       collections: [],
       isLoadingCollections: false,
       desktopStatus: "unknown",
+      desktopItemsAvailable: null,
 
       checkDesktop: async () => {
         set({ desktopStatus: "checking" });
         try {
           await validateDesktop();
           set({ desktopStatus: "available" });
+          void get().probeDesktopCapabilities();
           return true;
         } catch (err) {
           const message =
@@ -153,6 +173,16 @@ export const useZoteroStore = create<ZoteroState>()(
           });
           return false;
         }
+      },
+
+      probeDesktopCapabilities: async () => {
+        const { available, error } = await probeDesktopItems();
+        if (!available) {
+          log.warn("Zotero Desktop cannot serve items", {
+            error: String(error),
+          });
+        }
+        set({ desktopItemsAvailable: available });
       },
 
       connectWithDesktop: async () => {
@@ -173,6 +203,7 @@ export const useZoteroStore = create<ZoteroState>()(
             desktopStatus: "available",
           });
           get().loadCollections();
+          void get().probeDesktopCapabilities();
           return true;
         } catch (err) {
           const message =
@@ -252,6 +283,7 @@ export const useZoteroStore = create<ZoteroState>()(
           isAuthenticated: false,
           error: null,
           collections: [],
+          desktopItemsAvailable: null,
         });
       },
 
@@ -276,6 +308,7 @@ export const useZoteroStore = create<ZoteroState>()(
             error: null,
           });
           get().loadCollections();
+          if (creds.mode === "desktop") void get().probeDesktopCapabilities();
         } catch (err) {
           log.warn("Revalidation failed", { error: String(err) });
           const message =
@@ -307,6 +340,18 @@ export const useZoteroStore = create<ZoteroState>()(
         }
       },
 
+      searchLibrary: async (query, limit) => {
+        const connection = getConnection(get());
+        if (!connection) throw new Error("No Zotero library is connected");
+        return searchZoteroItems(connection, query, limit);
+      },
+
+      browseCollection: async (collectionKey, start, limit) => {
+        const connection = getConnection(get());
+        if (!connection) throw new Error("No Zotero library is connected");
+        return fetchCollectionItems(connection, collectionKey, start, limit);
+      },
+
       importCollectionToBib: async (collectionKey, name) => {
         const connection = getConnection(get());
         if (!connection) return;
@@ -327,6 +372,17 @@ export const useZoteroStore = create<ZoteroState>()(
             },
           );
 
+          // Key and format every entry the way the rest of the project reads.
+          // A collection already synced keeps the keys it was given, so a
+          // re-import never invalidates citations in the document.
+          const previousKeys =
+            get().syncedCollections[projectRoot]?.[sk]?.keyMap ?? {};
+          const keyed = applyHouseKeys(result.entries, previousKeys);
+          const content = `${keyed.map((entry) => entry.source).join("\n\n")}\n`;
+          const keyMap = Object.fromEntries(
+            keyed.map((entry) => [entry.itemKey, entry.citekey]),
+          );
+
           // Determine .bib file name
           const bibFileName = `${sanitizeFileName(name)}.bib`;
 
@@ -335,19 +391,19 @@ export const useZoteroStore = create<ZoteroState>()(
             (f) => f.name === bibFileName,
           );
           if (existingFile) {
-            docStore.updateFileContent(existingFile.id, result.bibtex);
+            docStore.updateFileContent(existingFile.id, content);
           } else {
             const fullPath = await createFileOnDisk(
               projectRoot,
               bibFileName,
-              result.bibtex,
+              content,
             );
             docStore.addFile({
               name: bibFileName,
               relativePath: bibFileName,
               absolutePath: fullPath,
               type: "bib",
-              content: result.bibtex,
+              content,
             });
           }
 
@@ -357,7 +413,7 @@ export const useZoteroStore = create<ZoteroState>()(
             name,
             bibFileName,
             libraryVersion: result.libraryVersion,
-            keyMap: result.keyMap,
+            keyMap,
           };
           set((s) => {
             const projectColls = s.syncedCollections[projectRoot] ?? {};
@@ -412,17 +468,21 @@ export const useZoteroStore = create<ZoteroState>()(
           );
 
           if (collectionKey) {
-            // For specific collections, syncCollection returns a full re-import
-            // Rebuild the .bib content from all entries
-            const newKeyMap: Record<string, string> = {};
-            const entries: string[] = [];
-            for (const entry of result.updatedEntries) {
-              if (entry.bibtex.trim()) {
-                entries.push(entry.bibtex);
-                newKeyMap[entry.key] = entry.citekey;
-              }
-            }
-            const updatedContent = `${entries.join("\n\n")}\n`;
+            // For specific collections, syncCollection returns a full re-import,
+            // so rebuild the file. Items already synced keep their keys.
+            const keyed = applyHouseKeys(
+              result.updatedEntries.map((entry) => ({
+                itemKey: entry.key,
+                bibtex: entry.bibtex,
+              })),
+              syncInfo.keyMap,
+            );
+            const newKeyMap = Object.fromEntries(
+              keyed.map((entry) => [entry.itemKey, entry.citekey]),
+            );
+            const updatedContent = `${keyed
+              .map((entry) => entry.source)
+              .join("\n\n")}\n`;
             docStore.updateFileContent(bibFile.id, updatedContent);
 
             set((s) => {
@@ -448,14 +508,21 @@ export const useZoteroStore = create<ZoteroState>()(
             const currentContent = bibFile.content ?? "";
             const entries = parseBibEntries(currentContent);
             const newKeyMap = { ...syncInfo.keyMap };
+            const keyed = applyHouseKeys(
+              result.updatedEntries.map((entry) => ({
+                itemKey: entry.key,
+                bibtex: entry.bibtex,
+              })),
+              syncInfo.keyMap,
+            );
 
-            for (const entry of result.updatedEntries) {
-              const oldCitekey = newKeyMap[entry.key];
+            for (const entry of keyed) {
+              const oldCitekey = newKeyMap[entry.itemKey];
               if (oldCitekey && oldCitekey !== entry.citekey) {
                 entries.delete(oldCitekey);
               }
-              entries.set(entry.citekey, entry.bibtex);
-              newKeyMap[entry.key] = entry.citekey;
+              entries.set(entry.citekey, entry.source);
+              newKeyMap[entry.itemKey] = entry.citekey;
             }
 
             for (const deletedKey of result.deletedKeys) {

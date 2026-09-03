@@ -30,9 +30,15 @@ export interface ZoteroCollection {
   itemCount: number;
 }
 
+/** One imported item: the Zotero item key and the BibTeX Zotero exported. */
+export interface ZoteroBibtexEntry {
+  itemKey: string;
+  bibtex: string;
+}
+
 /** Result of importing a collection */
 export interface CollectionImportResult {
-  bibtex: string;
+  entries: ZoteroBibtexEntry[];
   libraryVersion: number;
   keyMap: Record<string, string>;
   totalItems: number;
@@ -103,17 +109,45 @@ async function zoteroFetch(
         });
   if (!response.ok) {
     if (response.status === 304) return response;
-    if (response.status === 403) {
-      if (connection.mode === "desktop") {
-        throw new Error(
-          "Local access is disabled in Zotero. Enable “Allow other applications on this computer to communicate with Zotero” in Settings → Advanced.",
-        );
-      }
-      throw new Error("Invalid or expired Zotero API key");
-    }
-    throw new Error(`Zotero API error: ${response.status}`);
+    throw new Error(await describeZoteroError(connection, response));
   }
   return response;
+}
+
+/**
+ * Zotero Desktop's local API serves collections but can fail to serialize
+ * items on some builds, answering every /items request with an empty-bodied
+ * HTTP 500. Name that case explicitly so it does not surface as a bare code.
+ */
+export const DESKTOP_ITEMS_UNAVAILABLE =
+  "Zotero Desktop could not read item data (HTTP 500). Its local API is serving collections but failing on items — restart or update Zotero, or connect Zotero Cloud instead.";
+
+async function describeZoteroError(
+  connection: ZoteroConnection,
+  response: Response,
+): Promise<string> {
+  let detail = "";
+  try {
+    detail = (await response.text()).trim().slice(0, 200);
+  } catch {
+    detail = "";
+  }
+  if (response.status === 403) {
+    return connection.mode === "desktop"
+      ? "Local access is disabled in Zotero. Enable “Allow other applications on this computer to communicate with Zotero” in Settings → Advanced."
+      : "Invalid or expired Zotero API key";
+  }
+  if (response.status === 404 && connection.mode === "desktop") {
+    return "Zotero Desktop does not implement this request. Connect Zotero Cloud for full library access.";
+  }
+  if (response.status >= 500) {
+    return connection.mode === "desktop"
+      ? `${DESKTOP_ITEMS_UNAVAILABLE}${detail ? ` (${detail})` : ""}`
+      : `Zotero's server returned an error (HTTP ${response.status})${
+          detail ? `: ${detail}` : ""
+        }. Try again in a moment.`;
+  }
+  return `Zotero API error: ${response.status}${detail ? ` — ${detail}` : ""}`;
 }
 
 function extractCitekey(bibtex: string): string {
@@ -152,6 +186,28 @@ export async function validateDesktop(): Promise<ZoteroCredentials> {
   };
 }
 
+/**
+ * Collections answering does not mean items will. Probe one item read so the
+ * panel can warn before an import fails halfway through.
+ */
+export async function probeDesktopItems(): Promise<{
+  available: boolean;
+  error: string | null;
+}> {
+  try {
+    await zoteroFetch(
+      { mode: "desktop", userID: "0" },
+      "/users/0/items/top?format=json&limit=1",
+    );
+    return { available: true, error: null };
+  } catch (error) {
+    return {
+      available: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 // ─── Collections ───
 
 export async function fetchCollections(
@@ -174,6 +230,149 @@ export async function fetchCollections(
   }));
 }
 
+// ─── Item Search ───
+
+export interface ZoteroSearchResult {
+  /** Zotero item key, stable across searches */
+  key: string;
+  title: string;
+  creators: string;
+  year: string;
+  itemType: string;
+  publication: string;
+  bibtex: string;
+}
+
+interface ZoteroCreator {
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+}
+
+function formatCreators(creators: ZoteroCreator[] | undefined): string {
+  if (!creators?.length) return "";
+  const name = (creator: ZoteroCreator) =>
+    creator.lastName?.trim() || creator.name?.trim() || "";
+  const first = name(creators[0]);
+  if (!first) return "";
+  if (creators.length === 1) return first;
+  if (creators.length === 2) {
+    const second = name(creators[1]);
+    return second ? `${first} and ${second}` : first;
+  }
+  return `${first} et al.`;
+}
+
+function extractYear(date: string | undefined): string {
+  return date?.match(/\d{4}/)?.[0] ?? "";
+}
+
+interface RawZoteroItem {
+  key: string;
+  bibtex?: string;
+  data?: {
+    title?: string;
+    itemType?: string;
+    date?: string;
+    creators?: ZoteroCreator[];
+    publicationTitle?: string;
+    bookTitle?: string;
+    publisher?: string;
+    proceedingsTitle?: string;
+  };
+}
+
+/** Item fields the browser and the picker both display. */
+function mapZoteroItems(items: RawZoteroItem[]): ZoteroSearchResult[] {
+  return items.flatMap((item) => {
+    const bibtex = item.bibtex?.trim() ?? "";
+    if (!bibtex) return [];
+    const data = item.data ?? {};
+    return [
+      {
+        key: item.key,
+        title: data.title?.trim() || item.key,
+        creators: formatCreators(data.creators),
+        year: extractYear(data.date),
+        itemType: data.itemType ?? "",
+        publication:
+          data.publicationTitle?.trim() ||
+          data.proceedingsTitle?.trim() ||
+          data.bookTitle?.trim() ||
+          data.publisher?.trim() ||
+          "",
+        bibtex,
+      },
+    ];
+  });
+}
+
+/** Notes and standalone attachments have no BibTeX form, so never list them. */
+const CITABLE_ITEM_TYPES = "-attachment||note";
+
+/**
+ * Search top-level items across the library. Zotero's `titleCreatorYear` mode
+ * matches the fields a citation picker cares about.
+ */
+export async function searchZoteroItems(
+  connection: ZoteroConnection,
+  query: string,
+  limit = 25,
+): Promise<ZoteroSearchResult[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const params = new URLSearchParams({
+    q: trimmed,
+    qmode: "titleCreatorYear",
+    format: "json",
+    include: "data,bibtex",
+    itemType: CITABLE_ITEM_TYPES,
+    limit: String(limit),
+  });
+  const response = await zoteroFetch(
+    connection,
+    `/users/${connection.userID}/items/top?${params}`,
+  );
+  return mapZoteroItems((await response.json()) as RawZoteroItem[]);
+}
+
+/** One page of a collection's items, plus how many there are in total. */
+export interface ZoteroItemPage {
+  items: ZoteroSearchResult[];
+  total: number;
+}
+
+/**
+ * List the top-level items of one collection, newest first, for browsing
+ * before import. `collectionKey = null` lists the whole library.
+ */
+export async function fetchCollectionItems(
+  connection: ZoteroConnection,
+  collectionKey: string | null,
+  start = 0,
+  limit = 50,
+): Promise<ZoteroItemPage> {
+  const basePath = collectionKey
+    ? `/users/${connection.userID}/collections/${collectionKey}/items/top`
+    : `/users/${connection.userID}/items/top`;
+  const params = new URLSearchParams({
+    format: "json",
+    include: "data,bibtex",
+    itemType: CITABLE_ITEM_TYPES,
+    sort: "dateAdded",
+    direction: "desc",
+    limit: String(limit),
+    start: String(start),
+  });
+  const response = await zoteroFetch(connection, `${basePath}?${params}`);
+  const items = mapZoteroItems((await response.json()) as RawZoteroItem[]);
+  return {
+    items,
+    total: Number(response.headers.get("Total-Results") ?? items.length),
+  };
+}
+
 // ─── Collection Import (full download) ───
 
 /**
@@ -189,7 +388,7 @@ export async function importCollection(
     ? `/users/${connection.userID}/collections/${collectionKey}/items/top`
     : `/users/${connection.userID}/items/top`;
 
-  let allBibtex = "";
+  const entries: ZoteroBibtexEntry[] = [];
   const keyMap: Record<string, string> = {};
   let start = 0;
   const limit = 100;
@@ -216,11 +415,11 @@ export async function importCollection(
     if (items.length === 0) break;
 
     for (const item of items) {
-      const bibtex = item.bibtex ?? "";
-      if (!bibtex.trim()) continue;
+      const bibtex = item.bibtex?.trim() ?? "";
+      if (!bibtex) continue;
       const citekey = extractCitekey(bibtex);
       if (citekey) keyMap[item.key] = citekey;
-      allBibtex += (allBibtex ? "\n\n" : "") + bibtex;
+      entries.push({ itemKey: item.key, bibtex });
     }
 
     start += limit;
@@ -228,7 +427,7 @@ export async function importCollection(
     if (start >= total) break;
   }
 
-  return { bibtex: allBibtex, libraryVersion, keyMap, totalItems: total };
+  return { entries, libraryVersion, keyMap, totalItems: total };
 }
 
 // ─── Incremental Sync ───
@@ -256,13 +455,11 @@ export async function syncCollection(
   const result = await importCollection(connection, collectionKey, onProgress);
 
   return {
-    updatedEntries: Object.entries(result.keyMap).map(([key, citekey]) => {
-      // Extract the bibtex for this citekey from the full bibtex string
-      const bibtexEntries = result.bibtex.split(/\n(?=@)/);
-      const entry =
-        bibtexEntries.find((e) => extractCitekey(e) === citekey) ?? "";
-      return { key, citekey, bibtex: entry };
-    }),
+    updatedEntries: result.entries.map((entry) => ({
+      key: entry.itemKey,
+      citekey: extractCitekey(entry.bibtex),
+      bibtex: entry.bibtex,
+    })),
     deletedKeys: [],
     libraryVersion: result.libraryVersion,
   };
@@ -314,18 +511,24 @@ async function syncFullLibrary(
     if (start >= total) break;
   }
 
-  // Fetch deleted items
-  const deletedResponse = await zoteroFetch(
-    connection,
-    `/users/${connection.userID}/deleted?since=${lastVersion}`,
-  );
-  const deleted = (await deletedResponse.json()) as { items?: string[] };
-  const deletedKeys = deleted.items ?? [];
-
-  if (!newVersion || newVersion === lastVersion) {
-    newVersion = Number(
-      deletedResponse.headers.get("Last-Modified-Version") ?? lastVersion,
+  // Fetch deleted items. Zotero Desktop's local API has no /deleted route, so
+  // treat its absence as "nothing removed" rather than failing the whole sync.
+  let deletedKeys: string[] = [];
+  try {
+    const deletedResponse = await zoteroFetch(
+      connection,
+      `/users/${connection.userID}/deleted?since=${lastVersion}`,
     );
+    const deleted = (await deletedResponse.json()) as { items?: string[] };
+    deletedKeys = deleted.items ?? [];
+
+    if (!newVersion || newVersion === lastVersion) {
+      newVersion = Number(
+        deletedResponse.headers.get("Last-Modified-Version") ?? lastVersion,
+      );
+    }
+  } catch (error) {
+    if (connection.mode !== "desktop") throw error;
   }
 
   return { updatedEntries, deletedKeys, libraryVersion: newVersion };

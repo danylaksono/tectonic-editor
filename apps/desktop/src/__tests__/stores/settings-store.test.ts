@@ -6,6 +6,10 @@ import {
   MIN_EDITOR_FONT_SIZE,
   MAX_EDITOR_FONT_SIZE,
 } from "@/stores/settings-store";
+import {
+  DEFAULT_REVIEW_TAGS,
+  MAX_SUGGESTED_REVIEW_TAGS,
+} from "@/lib/review-tags";
 
 describe("editor font size", () => {
   it("defaults to DEFAULT_EDITOR_FONT_SIZE", () => {
@@ -30,5 +34,38 @@ describe("editor font size", () => {
     expect(useSettingsStore.getState().editorFontSize).toBe(
       DEFAULT_EDITOR_FONT_SIZE,
     );
+  });
+});
+
+describe("review tag vocabulary", () => {
+  it("starts from the built-in list", () => {
+    expect(useSettingsStore.getState().reviewTags).toEqual(DEFAULT_REVIEW_TAGS);
+  });
+
+  it("normalises what the user types so the panel and the list agree", () => {
+    useSettingsStore.getState().setReviewTags(["Likely Question", "#TYPO  "]);
+    expect(useSettingsStore.getState().reviewTags).toEqual([
+      "likely-question",
+      "typo",
+    ]);
+  });
+
+  it("drops duplicates and blanks", () => {
+    useSettingsStore.getState().setReviewTags(["typo", "Typo", "  ", "#"]);
+    expect(useSettingsStore.getState().reviewTags).toEqual(["typo"]);
+  });
+
+  it("allows a longer vocabulary than one annotation can carry", () => {
+    const many = Array.from({ length: 30 }, (_, i) => `tag-${i}`);
+    useSettingsStore.getState().setReviewTags(many);
+    expect(useSettingsStore.getState().reviewTags).toHaveLength(
+      MAX_SUGGESTED_REVIEW_TAGS,
+    );
+  });
+
+  it("can be emptied, which just means no suggestions", () => {
+    useSettingsStore.getState().setReviewTags([]);
+    expect(useSettingsStore.getState().reviewTags).toEqual([]);
+    useSettingsStore.getState().setReviewTags([...DEFAULT_REVIEW_TAGS]);
   });
 });

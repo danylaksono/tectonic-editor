@@ -15,6 +15,10 @@ export interface ReviewHighlightColor {
   accent: string;
   /** Blockquote border in the comments panel. */
   border: string;
+  /** Concrete CSS colour for SVG strokes — a drawing is painted into an SVG
+   *  overlay, which cannot take a Tailwind class. Matches the -500 shade of
+   *  the same colour so ink and highlights read as one palette. */
+  stroke: string;
 }
 
 export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
@@ -26,6 +30,7 @@ export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
     preview: "bg-yellow-300/40 ring-yellow-500/60",
     accent: "text-yellow-600",
     border: "border-yellow-500/60",
+    stroke: "#eab308",
   },
   {
     id: "green",
@@ -35,6 +40,7 @@ export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
     preview: "bg-emerald-300/40 ring-emerald-500/60",
     accent: "text-emerald-600",
     border: "border-emerald-500/60",
+    stroke: "#10b981",
   },
   {
     id: "blue",
@@ -44,6 +50,7 @@ export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
     preview: "bg-sky-300/40 ring-sky-500/60",
     accent: "text-sky-600",
     border: "border-sky-500/60",
+    stroke: "#0ea5e9",
   },
   {
     id: "pink",
@@ -53,6 +60,7 @@ export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
     preview: "bg-pink-300/40 ring-pink-500/60",
     accent: "text-pink-600",
     border: "border-pink-500/60",
+    stroke: "#ec4899",
   },
   {
     id: "orange",
@@ -62,6 +70,7 @@ export const REVIEW_HIGHLIGHT_COLORS: ReviewHighlightColor[] = [
     preview: "bg-orange-300/40 ring-orange-500/60",
     accent: "text-orange-600",
     border: "border-orange-500/60",
+    stroke: "#f97316",
   },
 ];
 

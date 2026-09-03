@@ -4,90 +4,48 @@
 
 ## [1.5.0] - 2026-09-03
 
-Opal 1.5 is about the work that happens around the writing: reading a draft
-critically, and keeping the bibliography honest. PDF review grows into a
-working tool — draw on the page, tag and search your notes, see them in the
-editor gutter next to the line they are about, export them as something you can
-hand a supervisor, and be told when a recompile has moved the text a note was
-written about. Zotero stops being a whole-collection import and becomes a
-library you browse and search from inside the editor, and every citation key
-Opal generates now follows one house style.
+PDF review gains drawing, tags, search, editor gutter markers, Markdown export,
+and a post-compile anchor check. Zotero can be browsed and searched item by
+item, and every import route now assigns the same citation key style.
 
 ### Added
 
-- **Drawing on the PDF**: freehand ink plus line, arrow, box, and ellipse, in
-  the same five colours as highlights. A drawing is stored the way every other
-  annotation is — page-relative PDF points with a bounding box — so it carries a
-  comment thread, tags, a place in the panel, a gutter dot, and a line in the
-  exported report without anything else needing to know what a drawing is.
-  Strokes are painted into an SVG overlay rather than into the page, so they
-  cost no extra PDF memory and no re-render. Long scribbles are thinned to the
-  points that carry their shape, because every point kept is JSON in a file
-  other reviewers have to pull.
-- **Tags on annotations**, normalised so that "Likely Question",
-  `#likely-question`, and "likely question" all land on the same chip — a filter
-  is only useful when one idea doesn't split across three spellings. A new
-  install starts with a viva-prep vocabulary (`likely-question`, `weakness`,
-  `defend`, `rewrite`, `cite-check`, `typo`) that you can replace entirely in
-  **Settings → PDF Review**. The list is only a set of suggestions; any tag can be
-  typed whether or not it is on it. Filter the panel by clicking the chips.
-- **Search across your annotations**, over note bodies, the quoted passage, the
-  author, and replies — a peer's answer is often where the useful sentence
-  lives. Terms are ANDed, so typing more words narrows the list, and a term
-  written as `#weakness` matches tags only, which lets `#weakness sample` find
-  tagged notes that also mention the sample.
-- **Review markers in the editor gutter.** Annotations are made on the PDF but
-  they are fixed in the source, and until now the only way to reach one from the
-  editor was to go looking for it in the preview. A dot now sits on the line an
-  annotation points at, coloured by whether anything there is still open, and
-  clicking it reveals that annotation in the PDF. Line numbers come from
-  SyncTeX, so markers are mapped through your edits as you type and re-sync to
-  the truth at the next compile. Resolved notes keep their marker — a resolved
-  note is a record of a decision about that line — but never colour it.
-- **Export review notes as Markdown**: document order rather than the panel's
-  open-first order, the quoted passage with each note so it stands alone away
-  from the PDF, and the source location so every entry is still actionable back
-  in the editor. It exports exactly what your filters are showing, and a
-  filtered report says so and how much it left out.
-- **An anchor check after every compile.** Annotations are positions measured
-  against one exact build, so reflowed text leaves them pointing somewhere else.
-  Opal now searches the fresh PDF for the text each annotation was written about
-  and reports one of four answers: it is still there, it has moved and here is
-  where it went, it is gone, or there was nothing to search by — which is not
-  evidence either way. Annotations with no text under them fall back to their
-  SyncTeX source location. Nothing is ever moved for you: where a note sits is a
-  deliberate act by whoever placed it, and a confidently wrong new position is
-  worse than a stale one because it looks authoritative. A filter in the panel
-  shows just the annotations whose text has moved or gone.
-- **Markdown and maths in review comments and replies**, rendered with KaTeX, so
-  arguing with yourself about a results chapter can say `$\hat\beta$` instead of
-  "the estimator b-hat". This is deliberately not the AI chat's renderer:
-  annotations travel between people, so nothing here executes, inserts, or
-  fetches anything.
-- **Browse a Zotero collection item by item**, paged, with a filter over the
-  collection tree that keeps the ancestors of every match so nesting still
-  reads. Import single items instead of the whole collection.
-- **Search your whole Zotero library** by title, creator, and year — from the
-  references panel, or directly from the citation picker while you are writing.
-  Items that are already in the project resolve to the key the project already
-  cites rather than being imported twice.
-- Zotero Desktop's local API can serve collections while failing to serve items
-  on some builds. Opal now probes one item read up front and warns you, rather
-  than failing halfway through an import.
+- Draw on the PDF: freehand, line, arrow, box, and ellipse, in the five
+  highlight colours. Drawings are annotations like any other — comment thread,
+  tags, panel entry, gutter marker, export.
+- Tags on annotations, normalised to lowercase kebab case. Starting list:
+  `likely-question`, `weakness`, `defend`, `rewrite`, `cite-check`, `typo`,
+  editable in Settings → PDF Review. Any tag can be typed whether or not it is
+  on the list. Click the chips to filter the panel.
+- Search annotations across note bodies, quoted text, authors, and replies.
+  Terms are ANDed; a term written as `#weakness` matches tags only.
+- Gutter markers in the editor on the source line each annotation points at,
+  coloured by whether anything there is still open; click one to reveal the
+  annotation in the PDF. Lines come from SyncTeX and are mapped through your
+  edits until the next compile.
+- Export the annotations currently shown as Markdown, in document order, with
+  the quoted text and source location for each.
+- Anchor check after each compile, reporting whether the text an annotation was
+  written about is still under it (ok), turned up elsewhere (shifted), is gone
+  (drifted), or could not be checked (unverified). Annotations are never moved
+  automatically. The panel can filter to just those that moved or went.
+- Markdown and KaTeX maths in comment bodies and replies.
+- Browse a Zotero collection item by item, paged, with a filter over the
+  collection tree; import single items rather than the whole collection.
+- Search the Zotero library by title, creator, and year, from the references
+  panel and from the citation picker. Items already in the project resolve to
+  the key the project cites instead of being imported twice.
+- Warning when Zotero Desktop's local API serves collections but not items,
+  raised before an import starts rather than partway through.
 
 ### Changed
 
-- **One house citation key for every import route**: family name, year, first
-  substantial title word, lowercased — `lovelace2025useful`. A project's
-  bibliography now reads consistently no matter where an entry came from, and
-  imported BibTeX is tidied to match. Collisions take a visible numeric suffix
-  instead of silently overwriting. Re-syncing a collection keeps the keys an
-  earlier sync already assigned, so a key your document cites is never rewritten
-  under it, and hand-written BibTeX you paste in is left exactly as you wrote it.
-- SyncTeX lookups for a document's worth of review annotations now resolve in a
-  single pass over the SyncTeX file, which for a thesis runs to tens of
-  megabytes. Resolving them one at a time is what would make an anchor check
-  take minutes rather than a moment.
+- Every import route assigns the same citation key: family name, year, first
+  substantial title word, lowercased — `lovelace2025useful`. Imported BibTeX is
+  tidied to match, collisions take a numeric suffix, keys assigned by an earlier
+  sync are preserved, and BibTeX you paste in by hand is left as written.
+- SyncTeX lookups for a document's annotations resolve in one pass over the
+  SyncTeX file instead of one pass each.
 
 ## [1.4.8] - 2026-08-05
 

@@ -1,7 +1,7 @@
 {
   "name": "@opal/root",
   "description": "Offline-first LaTeX editor with pluggable AI",
-  "version": "1.4.8",
+  "version": "1.5.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/danylaksono/opal-editor"
